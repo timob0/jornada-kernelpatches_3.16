@@ -65,6 +65,11 @@
 #include <sound/initval.h>
 #include <sound/uda134x.h>
 
+// Testsound for debugging the codec remove later!
+// #include "octane.h"
+// #include "cymbal.c"
+#include "fanfare.c"
+
 MODULE_AUTHOR("Timo Biesenbach <timo.biesenbach@gmail.com>");
 MODULE_DESCRIPTION("Jornada 720 Sound Driver");
 MODULE_LICENSE("GPL");
@@ -98,17 +103,17 @@ static DEFINE_SPINLOCK(snd_jornada720_sa1111_lock);
 // SA1111 L3 interface
 void sa1111_sac_writereg(struct sa1111_dev *devptr, unsigned int val, u32 reg)
 {
-	spin_lock(&snd_jornada720_sa1111_lock);
+	// spin_lock(&snd_jornada720_sa1111_lock); <- don't think these are useful here
 	sa1111_writel(val, devptr->mapbase + reg);
-	spin_unlock(&snd_jornada720_sa1111_lock);
+	// spin_unlock(&snd_jornada720_sa1111_lock);
 }
 
 unsigned int sa1111_sac_readreg(struct sa1111_dev *devptr, u32 reg)
 {
 	unsigned int val;
-	spin_lock(&snd_jornada720_sa1111_lock);
+	// spin_lock(&snd_jornada720_sa1111_lock); <- don't think these are useful here
 	val = sa1111_readl(devptr->mapbase + reg);
-	spin_unlock(&snd_jornada720_sa1111_lock);
+	// spin_unlock(&snd_jornada720_sa1111_lock);
 	return val;
 }
 
@@ -1283,8 +1288,139 @@ static void jornada720_proc_init(struct snd_jornada720 *chip) {
 #define jornada720_proc_init(x)
 #endif /* CONFIG_SND_DEBUG && CONFIG_PROC_FS */
 
-/* Here we'll setup all the sund card related stuff 
+// Test hardware setup by playing a sound from hardcoded WAV file
+sa1111_audio_test(struct sa1111_dev *devptr) {
+	// Clear SAC status register bits 5 & 6 (Tx/Rx FIFO Status)
+	unsigned int val = SASCR_ROR | SASCR_TUR;
+	sa1111_sac_writereg(devptr, val, SA1111_SASCR);
+
+	// Readout status register
+	val = sa1111_sac_readreg(devptr, SA1111_SASR0);
+	printk(KERN_INFO "j720 sa1111 SASR0: 0x%lxh\n", val);
+
+	val = (val >> 8) & 0x0f;
+	printk(KERN_INFO "j720 sa1111 Tx FIFO level: %d\n", val);
+
+	unsigned int i=0;
+	unsigned int sample;
+	u16 left;
+	u16 sadr;
+
+	while (i < fanfare_short_wav_len-33) {
+		// Simple approach - as long as FIFO not empty, feed it 8 lwords (16bit right / 16bit left)of data
+
+		// check how many elements we can write
+		// FIFO fill level is stored in bits 8-11 in SASR0
+		// It has 16 elements capacity, however we only can write a burst of 8 at once
+		val = sa1111_sac_readreg(devptr, SA1111_SASR0);
+		val = (val >> 8) & 0x0F;
+		if (val>8) val=8;
+
+		// (8-val)-lword burst write to fill fifo
+		for(sadr=0; sadr<(8-val); sadr++) {
+			// Shift mono left channel into 32bit sample to l/r channel words
+			left=(fanfare_short_wav[i] << 8) | fanfare_short_wav[i+1];
+
+			sample = ((left<<16) | (left));
+			sa1111_sac_writereg(devptr, sample, SA1111_SADR+(sadr*4));
+			i+=2;
+		}
+		
+		// Wait until FIFO not full
+		do {
+			val = sa1111_sac_readreg(devptr, SA1111_SASR0);
+		} while((val & SASR0_TNF)==0);
+	}
+}
+
+/*
+ *	Get the parent device driver structure from a child function device
+ *  Copied here since unfortunately not exported by sa1111.h
+ */
+struct sa1111 {
+	struct device	*dev;
+	struct clk	*clk;
+	unsigned long	phys;
+	int		irq;
+	int		irq_base;	/* base for cascaded on-chip IRQs */
+	spinlock_t	lock;
+	void __iomem	*base;
+	struct sa1111_platform_data *pdata;
+#ifdef CONFIG_PM
+	void		*saved_state;
+#endif
+};
+
+static inline struct sa1111 *sa1111_chip_driver(struct sa1111_dev *sadev)
+{
+	return (struct sa1111 *)dev_get_drvdata(sadev->dev.parent);
+}
+
+// Copied from "glue audio driver"
+static void sa1111_audio_init(struct sa1111_dev *devptr) {
+	// For register bitbanging
+	unsigned int val; 
+
+	// Get access to the "parent" sa1111 chip 
+	struct sa1111 *sachip = sa1111_chip_driver(devptr);
+
+	printk(KERN_INFO "j720 sa1111 init...");
+	printk(KERN_INFO "j720 sa1111 device id: %d\n", devptr->devid);
+	printk(KERN_INFO "j720 sa1111 chip base: 0x%lxh\n", sachip->base);
+	printk(KERN_INFO "j720 sa1111 SAC  base: 0x%lxh\n", devptr->mapbase);
+
+	PPSR &= ~(PPC_LDD3 | PPC_LDD4);
+	PPDR |= PPC_LDD3 | PPC_LDD4;
+	PPSR |= PPC_LDD4; /* enable speaker */
+	PPSR |= PPC_LDD3; /* enable microphone */
+
+	// deselect AC Link
+	sa1111_select_audio_mode(devptr, SA1111_AUDIO_I2S);
+
+	/* Enable the I2S clock and L3 bus clock. This is a function in another SA1111 block
+	 * which is why we need the sachip stuff (should probably be a function in sa1111.c/h)
+	 */
+	val = sa1111_readl(sachip->base + SA1111_SKPCR);
+	val|= (SKPCR_I2SCLKEN | SKPCR_L3CLKEN);
+	sa1111_writel(val, sachip->base + SA1111_SKPCR);
+
+	/* Activate and reset the Serial Audio Controller */
+	val = sa1111_sac_readreg(devptr, SA1111_SACR0);
+	val |= (SACR0_ENB | SACR0_RST);
+	sa1111_sac_writereg(devptr, val, SA1111_SACR0);
+	mdelay(5);
+	val = sa1111_sac_readreg(devptr, SA1111_SACR0);
+	val &= ~SACR0_RST;
+	sa1111_sac_writereg(devptr, val, SA1111_SACR0);
+	
+	/* For I2S, BIT_CLK is supplied internally. The "SA-1111
+	 * Specification Update" mentions that the BCKD bit should
+	 * be interpreted as "0 = output". Default clock divider
+	 * is 22.05kHz.
+	 *
+	 * Select I2S, L3 bus. "Recording" and "Replaying"
+	 * (receive and transmit) are enabled.
+	 */
+	sa1111_sac_writereg(devptr, SACR1_L3EN, SA1111_SACR1);
+
+	// Set samplerate
+	sa1111_set_audio_rate(devptr, 22050);
+
+	int rate = sa1111_get_audio_rate(devptr);
+	printk(KERN_INFO "j720 sa1111 audio samplerate: %d\n", rate);
+
+	printk(KERN_INFO "done\n");
+}
+
+/* Here we'll setup all the sound card related stuff 
 *  This is called by the sa1111 driver and we get a sa1111_dev struct.
+*
+*  In here, we need to initialize the hardware so that it is ready
+*  to play some sound and register it as a ALSA PCM subsystem.
+*  
+*  Specifically that means:
+*  - Program the SA1111 to use I2S data and L3 control channels
+*  - Wake up the UDA1341 chip 
 */
 static int snd_jornada720_probe(struct sa1111_dev *devptr) {
 	struct snd_card *card;
@@ -1293,20 +1429,11 @@ static int snd_jornada720_probe(struct sa1111_dev *devptr) {
 	int idx, err;
 	int dev = 0;
 
-	// Need to do the HW probing somewhere here
-	//
-	// SA1111_DEV(_d)  container_of((_d), struct sa1111_dev, dev)
-	// struct sa1111_dev *sadev = SA1111_DEV(devptr);
 	// Let the fun begin. Find the sa1111 chip
-	printk(KERN_INFO "j720 found sa1111 with id: %d\n", devptr->devid);
 	if (machine_is_jornada720()) {
-		sa1111_select_audio_mode(devptr, SA1111_AUDIO_I2S);
-		int rate = sa1111_get_audio_rate(devptr);
-		printk(KERN_INFO "j720 sa1111 audio samplerate: %d\n", rate);
-
-		// Turn the sound controller on
-		// devptr->mapbase
-		sa1111_sac_writereg(devptr, SASCR_RDD|SASCR_DTS, SA1111_SASCR);
+		// Call the SA1111 Audio init function
+		sa1111_audio_init(devptr);
+		
 		err = uda1341_open(devptr);
 		if (err < 0) {
 			return err;
@@ -1317,7 +1444,10 @@ static int snd_jornada720_probe(struct sa1111_dev *devptr) {
 		return -ENODEV;
 	}
 
-	//
+	// Test hardware setup by playing a sound
+	sa1111_audio_test(devptr);
+
+	// Register sound card with ALSA subsystem
 	err = snd_card_new(&devptr->dev, 0, id, THIS_MODULE, sizeof(struct snd_jornada720), &card);
 	if (err < 0) return err;
 
