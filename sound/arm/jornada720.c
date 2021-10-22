@@ -102,85 +102,23 @@ MODULE_SUPPORTED_DEVICE("{{ALSA,Jornada 720 Sound Driver}}");
 static DEFINE_SPINLOCK(snd_jornada720_sa1111_lock);
 
 // SA1111 L3 interface
-void sa1111_sac_writereg(struct sa1111_dev *devptr, unsigned int val, u32 reg)
-{
-	// spin_lock(&snd_jornada720_sa1111_lock); <- don't think these are useful here
+static inline void         sa1111_sac_writereg(struct sa1111_dev *devptr, unsigned int val, u32 reg) {
 	sa1111_writel(val, devptr->mapbase + reg);
-	// spin_unlock(&snd_jornada720_sa1111_lock);
 }
 
-unsigned int sa1111_sac_readreg(struct sa1111_dev *devptr, u32 reg)
-{
-	unsigned int val;
-	// spin_lock(&snd_jornada720_sa1111_lock); <- don't think these are useful here
-	val = sa1111_readl(devptr->mapbase + reg);
-	// spin_unlock(&snd_jornada720_sa1111_lock);
-	return val;
+static inline unsigned int sa1111_sac_readreg(struct sa1111_dev *devptr, u32 reg) {
+	return sa1111_readl(devptr->mapbase + reg);
 }
 
 // L3 stuff
-struct l3_msg {
-	unsigned char	addr;	/* slave address	*/
-	unsigned char	flags;		
-#define L3_M_RD		0x01
-#define L3_M_NOADDR	0x02
-	unsigned short	len;	/* msg length		*/
-	unsigned char	*buf;	/* pointer to msg data	*/
-};
-
-static inline unsigned char l3_sa1111_recv_byte(struct sa1111_dev *devptr, unsigned char addr)
-{
-	unsigned char dat;
-	int i=0;
-	unsigned int SASCR;
-
-	sa1111_sac_writereg(devptr, 0, SA1111_L3_CAR);
-	sa1111_sac_writereg(devptr, 0, SA1111_L3_CDR);
-	mdelay(1);
-
-	SASCR = sa1111_sac_readreg(devptr, SA1111_SASCR);
-	SASCR = SASCR_DTS|SASCR_RDD;
-	sa1111_sac_writereg(devptr, SASCR, SA1111_SASCR);
-
-	sa1111_sac_writereg(devptr, addr, SA1111_L3_CAR);
-
-	while (((sa1111_sac_readreg(devptr, SA1111_SASR0) & SASR0_L3RD) == 0) && (i < 1000)) {
-		mdelay(1);
-		i++;
-	}
-	mdelay(1);
-	dat = sa1111_sac_readreg(devptr, SA1111_L3_CDR);
-	mdelay(1);
-	SASCR = SASCR_RDD|SASCR_DTS;
-	sa1111_sac_writereg(devptr, SASCR, SA1111_SASCR);
-	return dat;
-}
-
-static void l3_sa1111_recv_msg(struct sa1111_dev *devptr, struct l3_msg *msg)
-{
-	int len = msg->len;
-	char *p = msg->buf;
-	unsigned int SACR1;
-
-	if (len > 1) {
-		SACR1 = sa1111_sac_readreg(devptr, SA1111_SACR1);
-		SACR1 |= SACR1_L3MB;
-		sa1111_sac_writereg(devptr, SACR1, SA1111_SACR1);
-
-		while ((len--) > 1)
-			*p++ = l3_sa1111_recv_byte(devptr, msg->addr);
-	}
-	SACR1 = sa1111_sac_readreg(devptr, SA1111_SACR1);
-	SACR1 &= ~SACR1_L3MB;
-	sa1111_sac_writereg(devptr, SACR1, SA1111_SACR1);
-	*p = l3_sa1111_recv_byte(devptr, msg->addr);
-}
-
-static inline void l3_sa1111_send_byte(struct sa1111_dev *devptr, unsigned char addr, unsigned char dat)
-{
+static inline void l3_sa1111_send_byte(struct sa1111_dev *devptr, unsigned char addr, unsigned char dat) {
 	int i=0;
 	unsigned int SASCR;
 	unsigned int SACR1;
+	
+	// Make sure only one thread is in the critical section below.
+	spin_lock(&snd_jornada720_sa1111_lock);
+	
 	sa1111_sac_writereg(devptr, 0, SA1111_L3_CAR);
 	sa1111_sac_writereg(devptr, 0, SA1111_L3_CDR);
 	mdelay(1);
@@ -197,7 +135,7 @@ static inline void l3_sa1111_send_byte(struct sa1111_dev *devptr, unsigned char 
 		i++;
 	}
 	if (((sa1111_sac_readreg(devptr, SA1111_SASR0) & SASR0_L3WD) == 0)) {
-		printk("Avoided crash in l3_sa1111_send_byte. Trying to reset L3.\n");
+		printk("Avoided crash in l3_sa1111_send_byte. Trying to reset L3.\n"); // <-- need to check this. doesnt sound right.
 		SACR1 = sa1111_sac_readreg(devptr, SA1111_SACR1);
 		SACR1 &= ~SACR1_L3EN;
 		sa1111_sac_writereg(devptr, SACR1, SA1111_SACR1);
@@ -211,132 +149,41 @@ static inline void l3_sa1111_send_byte(struct sa1111_dev *devptr, unsigned char 
 	
 	SASCR = SASCR_DTS|SASCR_RDD;
 	sa1111_sac_writereg(devptr, SASCR, SA1111_SASCR);
+	
+	// Give up the lock
+	spin_unlock(&snd_jornada720_sa1111_lock);
 }
-
-static void l3_sa1111_send_msg(struct sa1111_dev *devptr, struct l3_msg *msg)
-{
-	int len = msg->len;
-	char *p = msg->buf;
-
-	unsigned int SACR1;
-	SACR1 = sa1111_sac_readreg(devptr, SA1111_SACR1);
-
-	if (len > 1) {
-		SACR1 |= SACR1_L3MB;
-		sa1111_sac_writereg(devptr, SACR1, SA1111_SACR1);
-
-		while ((len--) > 1)
-			l3_sa1111_send_byte(devptr, msg->addr, *p++);
-	}
-	SACR1 &= ~SACR1_L3MB;
-	sa1111_sac_writereg(devptr, SACR1, SA1111_SACR1);
-	l3_sa1111_send_byte(devptr, msg->addr, *p);
-}
-
-static int l3_sa1111_xfer(struct sa1111_dev *devptr, struct l3_msg msgs[], int num)
-{
-	int i;
-	unsigned int SKPCR;
-	SKPCR = sa1111_sac_readreg(devptr, SA1111_SKPCR);
-
-	/* Enable clock... */
-	SKPCR |= SKPCR_L3CLKEN;
-	sa1111_sac_writereg(devptr, SKPCR, SA1111_SKPCR);
-
-	mdelay(20);
-
-	for (i = 0; i < num; i++) {
-		struct l3_msg *pmsg = &msgs[i];
-
-		if (pmsg->flags & L3_M_RD)
-			l3_sa1111_recv_msg(devptr, pmsg);
-		else
-			l3_sa1111_send_msg(devptr, pmsg);
-	}
-
-	mdelay(1);
-	SKPCR &= ~SKPCR_L3CLKEN;
-	sa1111_sac_writereg(devptr, SKPCR, SA1111_SKPCR);
-
-	return num;
-}
-
-
 
 // UDA134x stuff
 #define UDA1341_NAME "uda1341"
 
-#define FMT_I2S		0
-#define FMT_LSB16	1
-#define FMT_LSB18	2
-#define FMT_LSB20	3
-#define FMT_MSB		4
-#define FMT_LSB16MSB	5
-#define FMT_LSB18MSB	6
-#define FMT_LSB20MSB	7
-
-#define L3_UDA1341_CONFIGURE	0x13410001
-
-struct l3_gain {
-	unsigned int	left:8;
-	unsigned int	right:8;
-	unsigned int	unused:8;
-	unsigned int	channel:8;
-};
-
-#define L3_SET_VOLUME		0x13410002
-#define L3_SET_TREBLE		0x13410003
-#define L3_SET_BASS		0x13410004
-#define L3_SET_GAIN		0x13410005
-
-struct l3_agc {
-	unsigned int	level:8;
-	unsigned int	enable:1;
-	unsigned int	attack:7;
-	unsigned int	decay:8;
-	unsigned int	channel:8;
-};
-
-#define L3_INPUT_AGC		0x13410006
-
 #define DEF_VOLUME	65
 
 /*
- * UDA1341 L3 address and command types
+ * UDA134x L3 address and command types
  */
 #define UDA1341_L3ADDR		5
-#define UDA1341_DATA0		(UDA1341_L3ADDR << 2 | 0)
+#define UDA1341_DATA		(UDA1341_L3ADDR << 2 | 0)
 #define UDA1341_STATUS		(UDA1341_L3ADDR << 2 | 2)
 
 struct uda1341_regs {
 	unsigned char	stat0;
 #define STAT0			0x00
-#define STAT0_RESET   		(1 << 6)  // Reset
 #define STAT0_SC_MASK		(3 << 4)  // System clock
 #define STAT0_SC_512FS		(0 << 4)  // Systemclock 512/s
 #define STAT0_SC_384FS		(1 << 4)  // Systemclock 384f/s
 #define STAT0_SC_256FS		(2 << 4)  // Systemclock 256f/s
+#define STAT0_SC_UNUSED		(3 << 4)  // Systemclock unused
 #define STAT0_IF_MASK		(7 << 1)
 #define STAT0_IF_I2S		(0 << 1)  // Data format I2S
 #define STAT0_IF_LSB16		(1 << 1)  // Data LSB justified 16bit
 #define STAT0_IF_LSB18		(2 << 1)  // Data LSB justified 18bit
 #define STAT0_IF_LSB20		(3 << 1)  // Data LSB justified 20bit
-#define STAT0_IF_MSB		(4 << 1)  // Data MSB
+#define STAT0_IF_MSB		(4 << 1)  // Data MSB justified
 #define STAT0_IF_LSB16MSB	(5 << 1)  // Data MSB justified 16bit
 #define STAT0_IF_LSB18MSB	(6 << 1)  // Data MSB justified 18bit
 #define STAT0_IF_LSB20MSB	(7 << 1)  // Data MSB justified 20bit
 #define STAT0_DC_FILTER		(1 << 0)  // Enable DC filter
-	unsigned char	stat1;
-#define STAT1			0x80
-#define STAT1_OGS_6DB  		(1 << 6)  // Output gain +6db
-#define STAT1_IGS_6DB  		(1 << 5)  // Input gain +6db
-#define STAT1_PAD_INV  		(1 << 4)  // Polarity AD Invert
-#define STAT1_PDA_INV  		(1 << 3)  // Polarity DA Invert
-#define STAT1_DS 	  		(1 << 2)  // Playback doublespeed
-#define STAT1_PC_MASK		(3 << 0)
-#define STAT1_PC_DAC  		(1 << 0)  // Power DAC
-#define STAT1_PC_ADC  		(2 << 0)  // Power ADC
-#define STAT1_PC_ALL  		(3 << 0)  // Power DAC+ADC
 	unsigned char	data0_0;
 #define DATA0			0x00
 #define DATA0_VOLUME_MASK	0x3f
@@ -359,10 +206,12 @@ struct uda1341_regs {
 #define DATA2_FILTER_MAX	(3 << 0)
 	unsigned char	data0_3;
 #define DATA3			0xc0
+#define DATA3_POWER_OFF		(0 << 0)
+#define DATA3_POWER_DAC		(1 << 0)
+#define DATA3_POWER_ADC		(2 << 0)
+#define DATA3_POWER_ON		(3 << 0)
 };
 
-#define REC_MASK	(SOUND_MASK_LINE | SOUND_MASK_MIC)
-#define DEV_MASK	(REC_MASK | SOUND_MASK_VOLUME | SOUND_MASK_BASS | SOUND_MASK_TREBLE)
 
 struct uda1341 {
 	struct uda1341_regs regs;
@@ -383,7 +232,6 @@ static struct uda1341 uda_chip = {
 	.line   = 88 | 88 << 8,
 	.mic    = 88 | 88 << 8,
 	.regs.stat0   = STAT0_SC_512FS | STAT0_IF_LSB16, // <- set i2s interface and 256f/s
-	.regs.stat1   = STAT1_PC_ALL,                    // <- power the thing up
 	.regs.data0_0 = DATA0_VOLUME(62 - ((DEF_VOLUME * 61) / 100)),
 	.regs.data0_1 = DATA1_BASS(0) | DATA1_TREBLE(0),
 	.regs.data0_2 = DATA2_DEEMP_NONE | DATA2_FILTER_FLAT,
@@ -393,40 +241,19 @@ static struct uda1341 uda_chip = {
 static void uda1341_sync(struct sa1111_dev *devptr) {
 	struct uda1341 *uda = &uda_chip;
 	l3_sa1111_send_byte(devptr, UDA1341_STATUS, STAT0 | uda->regs.stat0);
-	l3_sa1111_send_byte(devptr, UDA1341_STATUS, STAT1 | uda->regs.stat1);
-	l3_sa1111_send_byte(devptr, UDA1341_DATA0,  DATA0 | uda->regs.data0_0);
-	l3_sa1111_send_byte(devptr, UDA1341_DATA0,  DATA1 | uda->regs.data0_1);
-	l3_sa1111_send_byte(devptr, UDA1341_DATA0,  DATA2 | uda->regs.data0_2);
-	// l3_sa1111_send_byte(devptr, UDA1341_DATA0,DATA3 | uda->regs.data0_3); This is wrong. Poweron default should be ok.
+	l3_sa1111_send_byte(devptr, UDA1341_DATA,  DATA0 | uda->regs.data0_0);
+	l3_sa1111_send_byte(devptr, UDA1341_DATA,  DATA1 | uda->regs.data0_1);
+	l3_sa1111_send_byte(devptr, UDA1341_DATA,  DATA2 | uda->regs.data0_2);
+	// l3_sa1111_send_byte(devptr, UDA1341_DATA,DATA3 | uda->regs.data0_3); This is wrong. Poweron default should be ok.
 }
 
 static void uda1341_cmd_init(struct sa1111_dev *devptr) {
 	struct uda1341 *uda = &uda_chip;
 	uda->active = 1;
-	// Reset the guy to factory defaults
-	l3_sa1111_send_byte(devptr, UDA1341_STATUS, STAT0 | STAT0_RESET);
-	udelay(10);
 	// Synchronize the configuration from uda_chip
 	uda1341_sync(devptr);
 }
-
-/**
- * Reset the UDA1341 to factory defaults (see datasheet)
- * Then program interface format and f/s
- */
-static void uda1341_reset(struct sa1111_dev *devptr) {
-	// Reset the guy to factory defaults
-	l3_sa1111_send_byte(devptr, UDA1341_STATUS, STAT0 | STAT0_RESET);
-	udelay(10);
-	printk(KERN_INFO "j720 uda1341 initialized with factory defaults\n");
-	
-	// Program initial settings
-	unsigned char val = (STAT0 | STAT0_IF_LSB16 | STAT0_SC_512FS);
-	l3_sa1111_send_byte(devptr, UDA1341_STATUS, val);
-	udelay(10);
-	printk(KERN_INFO "j720 uda1341 STAT0 programmed with: 0x%lxh\n", STAT0 | STAT0_IF_LSB16 | STAT0_SC_512FS);
-}
-
+/*
 static int uda1341_update_direct(struct sa1111_dev *devptr, int cmd, void *arg) {
 	struct uda1341 *uda = &uda_chip;
 	struct l3_gain *v = arg;
@@ -434,12 +261,12 @@ static int uda1341_update_direct(struct sa1111_dev *devptr, int cmd, void *arg) 
 	int val;
 
 	switch (cmd) {
-	case L3_SET_VOLUME: /* set volume.  val =  0 to 100 => 62 to 1 */
+	case L3_SET_VOLUME: / * set volume.  val =  0 to 100 => 62 to 1 * /
 		uda->regs.data0_0 = DATA0_VOLUME(62 - ((v->left * 61) / 100));
 		newreg = uda->regs.data0_0 | DATA0;
 		break;
 
-	case L3_SET_BASS:   /* set bass.    val = 50 to 100 => 0 to 12 */
+	case L3_SET_BASS:   / * set bass.    val = 50 to 100 => 0 to 12 * /
 		val = v->left - 50;
 		if (val < 0)
 			val = 0;
@@ -448,7 +275,7 @@ static int uda1341_update_direct(struct sa1111_dev *devptr, int cmd, void *arg) 
 		newreg = uda->regs.data0_1 | DATA1;
 		break;
 
-	case L3_SET_TREBLE: /* set treble.  val = 50 to 100 => 0 to 3 */
+	case L3_SET_TREBLE: / * set treble.  val = 50 to 100 => 0 to 3 * /
 		val = v->left - 50;
 		if (val < 0)
 			val = 0;
@@ -462,11 +289,42 @@ static int uda1341_update_direct(struct sa1111_dev *devptr, int cmd, void *arg) 
 	}		
 
 	if (uda->active)
-		l3_sa1111_send_byte(devptr, UDA1341_DATA0, newreg);
+		l3_sa1111_send_byte(devptr, UDA1341_DATA, newreg);
 	return 0;
+}
+*/
+
+/**
+ * Initialize the 1344 with some sensible defaults and turn on power.
+ */
+static void uda1344_reset(struct sa1111_dev *devptr) {
+	unsigned char val; 
+
+	val = STAT0 | STAT0_IF_I2S | STAT0_SC_512FS;
+	l3_sa1111_send_byte(devptr, UDA1341_STATUS, val);
+	printk(KERN_INFO "j720 uda1341 STAT0 programmed with: 0x%lxh\n", val);
+
+	val = DATA0 | DATA0_VOLUME(0);  // <-- 0db volume : max
+	l3_sa1111_send_byte(devptr, UDA1341_DATA, val);
+	printk(KERN_INFO "j720 uda1341 DATA0 programmed with: 0x%lxh\n", val);
+
+	val = DATA1 | DATA1_BASS(0) | DATA1_TREBLE(0);  // <-- 0db volume : max
+	l3_sa1111_send_byte(devptr, UDA1341_DATA, val);
+	printk(KERN_INFO "j720 uda1341 DATA1 programmed with: 0x%lxh\n", val);
+
+	val = DATA2 | DATA2_DEEMP_NONE | DATA2_FILTER_FLAT;
+	l3_sa1111_send_byte(devptr, UDA1341_DATA, val);
+	printk(KERN_INFO "j720 uda1341 DATA3 programmed with: 0x%lxh\n", val);
+
+	val = DATA3 | DATA3_POWER_ON;
+	l3_sa1111_send_byte(devptr, UDA1341_DATA, val);
+	printk(KERN_INFO "j720 uda1341 DATA3 programmed with: 0x%lxh\n", val);
 }
 
 /*
+#define REC_MASK	(SOUND_MASK_LINE | SOUND_MASK_MIC)
+#define DEV_MASK	(REC_MASK | SOUND_MASK_VOLUME | SOUND_MASK_BASS | SOUND_MASK_TREBLE)
+
 static int uda1341_mixer_ioctl(struct l3_client *clnt, int cmd, void *arg)
 {
 	struct uda1341 *uda = clnt->driver_data;
@@ -1481,8 +1339,9 @@ static void sa1111_audio_init(struct sa1111_dev *devptr) {
 	int rate = sa1111_get_audio_rate(devptr);
 	printk(KERN_INFO "j720 sa1111 audio samplerate: %d\n", rate);
 
-	// Reset the CODEC to factory defaults
-// What if we don't mess with it? Should be initialized by wince	uda1341_reset(devptr);
+	// Reset the CODEC to defaults
+	// What if we don't mess with it? Should be initialized by wince	
+	uda1344_reset(devptr);
 
 	printk(KERN_INFO "done\n");
 }
@@ -1512,7 +1371,7 @@ static int snd_jornada720_probe(struct sa1111_dev *devptr) {
 		// Test hardware setup
 		sa1111_audio_test(devptr);
 
-		// Program UDA1341 driver defaults
+		// Program UDA1344 driver defaults
 		// err = uda1341_open(devptr); <<- THIS IS BROKEN! Leaving the WinCE initialization seems to be better ;-)
 		if (1==0 && err < 0) {
 			return err;
