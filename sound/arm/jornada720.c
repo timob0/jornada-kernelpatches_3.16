@@ -44,6 +44,7 @@
 #include <linux/math64.h>
 #include <linux/module.h>
 #include <linux/delay.h>
+#include <linux/types.h>
 // Hardware stuff
 #include <linux/kernel.h>
 #include <linux/ioport.h>
@@ -66,9 +67,9 @@
 #include <sound/uda134x.h>
 
 // Testsound for debugging the codec remove later!
-// #include "octane.h"
+#include "octane.h"
 // #include "cymbal.c"
-#include "fanfare.c"
+// #include "fanfare.c"
 
 MODULE_AUTHOR("Timo Biesenbach <timo.biesenbach@gmail.com>");
 MODULE_DESCRIPTION("Jornada 720 Sound Driver");
@@ -136,9 +137,11 @@ static inline unsigned char l3_sa1111_recv_byte(struct sa1111_dev *devptr, unsig
 	sa1111_sac_writereg(devptr, 0, SA1111_L3_CAR);
 	sa1111_sac_writereg(devptr, 0, SA1111_L3_CDR);
 	mdelay(1);
+
 	SASCR = sa1111_sac_readreg(devptr, SA1111_SASCR);
 	SASCR = SASCR_DTS|SASCR_RDD;
 	sa1111_sac_writereg(devptr, SASCR, SA1111_SASCR);
+
 	sa1111_sac_writereg(devptr, addr, SA1111_L3_CAR);
 
 	while (((sa1111_sac_readreg(devptr, SA1111_SASR0) & SASR0_L3RD) == 0) && (i < 1000)) {
@@ -185,6 +188,7 @@ static inline void l3_sa1111_send_byte(struct sa1111_dev *devptr, unsigned char 
 	SASCR = sa1111_sac_readreg(devptr, SA1111_SASCR);
 	SASCR = SASCR_DTS|SASCR_RDD;
 	sa1111_sac_writereg(devptr, SASCR, SA1111_SASCR);
+
 	sa1111_sac_writereg(devptr, addr,  SA1111_L3_CAR);
 	sa1111_sac_writereg(devptr, dat,   SA1111_L3_CDR);
 
@@ -262,11 +266,6 @@ static int l3_sa1111_xfer(struct sa1111_dev *devptr, struct l3_msg msgs[], int n
 // UDA134x stuff
 #define UDA1341_NAME "uda1341"
 
-struct uda1341_cfg {
-	unsigned int fs:16;
-	unsigned int format:3;
-};
-
 #define FMT_I2S		0
 #define FMT_LSB16	1
 #define FMT_LSB18	2
@@ -312,20 +311,32 @@ struct l3_agc {
 struct uda1341_regs {
 	unsigned char	stat0;
 #define STAT0			0x00
-#define STAT0_SC_MASK		(3 << 4)
-#define STAT0_SC_512FS		(0 << 4)
-#define STAT0_SC_384FS		(1 << 4)
-#define STAT0_SC_256FS		(2 << 4)
+#define STAT0_RESET   		(1 << 6)  // Reset
+#define STAT0_SC_MASK		(3 << 4)  // System clock
+#define STAT0_SC_512FS		(0 << 4)  // Systemclock 512/s
+#define STAT0_SC_384FS		(1 << 4)  // Systemclock 384f/s
+#define STAT0_SC_256FS		(2 << 4)  // Systemclock 256f/s
 #define STAT0_IF_MASK		(7 << 1)
-#define STAT0_IF_I2S		(0 << 1)
-#define STAT0_IF_LSB16		(1 << 1)
-#define STAT0_IF_LSB18		(2 << 1)
-#define STAT0_IF_LSB20		(3 << 1)
-#define STAT0_IF_MSB		(4 << 1)
-#define STAT0_IF_LSB16MSB	(5 << 1)
-#define STAT0_IF_LSB18MSB	(6 << 1)
-#define STAT0_IF_LSB20MSB	(7 << 1)
-#define STAT0_DC_FILTER		(1 << 0)
+#define STAT0_IF_I2S		(0 << 1)  // Data format I2S
+#define STAT0_IF_LSB16		(1 << 1)  // Data LSB justified 16bit
+#define STAT0_IF_LSB18		(2 << 1)  // Data LSB justified 18bit
+#define STAT0_IF_LSB20		(3 << 1)  // Data LSB justified 20bit
+#define STAT0_IF_MSB		(4 << 1)  // Data MSB
+#define STAT0_IF_LSB16MSB	(5 << 1)  // Data MSB justified 16bit
+#define STAT0_IF_LSB18MSB	(6 << 1)  // Data MSB justified 18bit
+#define STAT0_IF_LSB20MSB	(7 << 1)  // Data MSB justified 20bit
+#define STAT0_DC_FILTER		(1 << 0)  // Enable DC filter
+	unsigned char	stat1;
+#define STAT1			0x80
+#define STAT1_OGS_6DB  		(1 << 6)  // Output gain +6db
+#define STAT1_IGS_6DB  		(1 << 5)  // Input gain +6db
+#define STAT1_PAD_INV  		(1 << 4)  // Polarity AD Invert
+#define STAT1_PDA_INV  		(1 << 3)  // Polarity DA Invert
+#define STAT1_DS 	  		(1 << 2)  // Playback doublespeed
+#define STAT1_PC_MASK		(3 << 0)
+#define STAT1_PC_DAC  		(1 << 0)  // Power DAC
+#define STAT1_PC_ADC  		(2 << 0)  // Power ADC
+#define STAT1_PC_ALL  		(3 << 0)  // Power DAC+ADC
 	unsigned char	data0_0;
 #define DATA0			0x00
 #define DATA0_VOLUME_MASK	0x3f
@@ -342,16 +353,12 @@ struct uda1341_regs {
 #define DATA2_DEEMP_32KHz	(1 << 3)
 #define DATA2_DEEMP_44KHz	(2 << 3)
 #define DATA2_DEEMP_48KHz	(3 << 3)
-#define DATA2_MUTE		(1 << 2)
-#ifndef CONFIG_UDA1345
+#define DATA2_MUTE			(1 << 2)
 #define DATA2_FILTER_FLAT	(0 << 0)
 #define DATA2_FILTER_MIN	(1 << 0)
 #define DATA2_FILTER_MAX	(3 << 0)
-#endif
 	unsigned char	data0_3;
 #define DATA3			0xc0
-#define DATA3_DAC_ON	(0 << 0)
-#define DATA3_ADC_ON	(1 << 0)
 };
 
 #define REC_MASK	(SOUND_MASK_LINE | SOUND_MASK_MIC)
@@ -375,66 +382,52 @@ static struct uda1341 uda_chip = {
 	.treble = 50 | 50 << 8,
 	.line   = 88 | 88 << 8,
 	.mic    = 88 | 88 << 8,
-	.regs.stat0   = STAT0_SC_256FS | STAT0_IF_LSB16,
+	.regs.stat0   = STAT0_SC_512FS | STAT0_IF_LSB16, // <- set i2s interface and 256f/s
+	.regs.stat1   = STAT1_PC_ALL,                    // <- power the thing up
 	.regs.data0_0 = DATA0_VOLUME(62 - ((DEF_VOLUME * 61) / 100)),
 	.regs.data0_1 = DATA1_BASS(0) | DATA1_TREBLE(0),
-	.regs.data0_2 = DATA2_DEEMP_NONE | DATA2_FILTER_MAX,
-	.regs.data0_3 = DATA3_ADC_ON | DATA3_DAC_ON,
+	.regs.data0_2 = DATA2_DEEMP_NONE | DATA2_FILTER_FLAT,
+	.regs.data0_3 = 0x00, // <-- Data 3 defintion is incomplete. We might not need it 
 };
 
-static void uda1341_sync(struct sa1111_dev *devptr)
-{
+static void uda1341_sync(struct sa1111_dev *devptr) {
 	struct uda1341 *uda = &uda_chip;
 	l3_sa1111_send_byte(devptr, UDA1341_STATUS, STAT0 | uda->regs.stat0);
-	l3_sa1111_send_byte(devptr, UDA1341_DATA0,DATA0 | uda->regs.data0_0);
-	l3_sa1111_send_byte(devptr, UDA1341_DATA0,DATA1 | uda->regs.data0_1);
-	l3_sa1111_send_byte(devptr, UDA1341_DATA0,DATA2 | uda->regs.data0_2);
-	l3_sa1111_send_byte(devptr, UDA1341_DATA0,DATA3 | uda->regs.data0_3);
+	l3_sa1111_send_byte(devptr, UDA1341_STATUS, STAT1 | uda->regs.stat1);
+	l3_sa1111_send_byte(devptr, UDA1341_DATA0,  DATA0 | uda->regs.data0_0);
+	l3_sa1111_send_byte(devptr, UDA1341_DATA0,  DATA1 | uda->regs.data0_1);
+	l3_sa1111_send_byte(devptr, UDA1341_DATA0,  DATA2 | uda->regs.data0_2);
+	// l3_sa1111_send_byte(devptr, UDA1341_DATA0,DATA3 | uda->regs.data0_3); This is wrong. Poweron default should be ok.
 }
 
-static void uda1341_cmd_init(struct sa1111_dev *devptr)
-{
+static void uda1341_cmd_init(struct sa1111_dev *devptr) {
 	struct uda1341 *uda = &uda_chip;
 	uda->active = 1;
-	l3_sa1111_send_byte(devptr, UDA1341_STATUS, uda->regs.stat0);
-	l3_sa1111_send_byte(devptr, UDA1341_STATUS, uda->regs.stat0);
+	// Reset the guy to factory defaults
+	l3_sa1111_send_byte(devptr, UDA1341_STATUS, STAT0 | STAT0_RESET);
+	udelay(10);
+	// Synchronize the configuration from uda_chip
 	uda1341_sync(devptr);
 }
 
-static int uda1341_configure(struct sa1111_dev *devptr, struct uda1341_cfg *conf)
-{
-	struct uda1341 *uda = &uda_chip;
-	int ret = 0;
-
-	uda->regs.stat0 &= ~(STAT0_SC_MASK | STAT0_IF_MASK);
-
-	switch (conf->fs) {
-	case 512: uda->regs.stat0 |= STAT0_SC_512FS;	break;
-	case 384: uda->regs.stat0 |= STAT0_SC_384FS;	break;
-	case 256: uda->regs.stat0 |= STAT0_SC_256FS;	break;
-	default:  ret = -EINVAL;			break;
-	}
-
-	switch (conf->format) {
-	case FMT_I2S:		uda->regs.stat0 |= STAT0_IF_I2S;	break;
-	case FMT_LSB16:		uda->regs.stat0 |= STAT0_IF_LSB16;	break;
-	case FMT_LSB18:		uda->regs.stat0 |= STAT0_IF_LSB18;	break;
-	case FMT_LSB20:		uda->regs.stat0 |= STAT0_IF_LSB20;	break;
-	case FMT_MSB:		uda->regs.stat0 |= STAT0_IF_MSB;	break;
-	case FMT_LSB16MSB:	uda->regs.stat0 |= STAT0_IF_LSB16MSB;	break;
-	case FMT_LSB18MSB:	uda->regs.stat0 |= STAT0_IF_LSB18MSB;	break;
-	case FMT_LSB20MSB:	uda->regs.stat0 |= STAT0_IF_LSB20MSB;	break;
-	}
-
-	if (ret == 0 && uda->active) {
-		char buf = uda->regs.stat0 | STAT0;
-		l3_sa1111_send_byte(devptr, UDA1341_STATUS, buf);
-	}
-	return ret;
+/**
+ * Reset the UDA1341 to factory defaults (see datasheet)
+ * Then program interface format and f/s
+ */
+static void uda1341_reset(struct sa1111_dev *devptr) {
+	// Reset the guy to factory defaults
+	l3_sa1111_send_byte(devptr, UDA1341_STATUS, STAT0 | STAT0_RESET);
+	udelay(10);
+	printk(KERN_INFO "j720 uda1341 initialized with factory defaults\n");
+	
+	// Program initial settings
+	unsigned char val = (STAT0 | STAT0_IF_LSB16 | STAT0_SC_512FS);
+	l3_sa1111_send_byte(devptr, UDA1341_STATUS, val);
+	udelay(10);
+	printk(KERN_INFO "j720 uda1341 STAT0 programmed with: 0x%lxh\n", STAT0 | STAT0_IF_LSB16 | STAT0_SC_512FS);
 }
 
-static int uda1341_update_direct(struct sa1111_dev *devptr, int cmd, void *arg)
-{
+static int uda1341_update_direct(struct sa1111_dev *devptr, int cmd, void *arg) {
 	struct uda1341 *uda = &uda_chip;
 	struct l3_gain *v = arg;
 	char newreg;
@@ -559,31 +552,80 @@ out:
 }
 */
 
-static int uda1341_command(struct sa1111_dev *devptr, int cmd, void *arg)
-{
-	int ret = -EINVAL;
-
-	/*if (_IOC_TYPE(cmd) == 'M')
-		ret = uda1341_mixer_ioctl(clnt, cmd, arg);
-	else*/ 
-	if (cmd == L3_UDA1341_CONFIGURE)
-		ret = uda1341_configure(devptr, arg);
-
-	return ret;
-}
-
-static int uda1341_open(struct sa1111_dev *devptr)
-{
+static int uda1341_open(struct sa1111_dev *devptr) {
 	uda1341_cmd_init(devptr);
 	return 0;
 }
 
-static void uda1341_close(struct sa1111_dev *devptr)
-{
+static void uda1341_close(struct sa1111_dev *devptr) {
 	struct uda1341 *uda = &uda_chip;
 	uda->active = 0;
 }
 
+static void uda1341_set_samplerate(struct sa1111_dev *devptr, long rate) {
+	struct uda1341 *uda = &uda_chip;
+	int clk_div = 0;
+	int clk=0;
+
+	/*
+	 * We have the following clock sources:
+	 * 4.096 MHz, 5.6245 MHz, 11.2896 MHz, 12.288 MHz
+	 * Those can be divided either by 256, 384 or 512.
+	 * This makes up 12 combinations for the following samplerates...
+	 * 
+	 * Note: not sure if this is real for Jornada 720 
+	 */
+	if (rate >= 48000)
+		rate = 48000;
+	else if (rate >= 44100)
+		rate = 44100;
+	else if (rate >= 32000)
+		rate = 32000;
+	else if (rate >= 29400)
+		rate = 29400;
+	else if (rate >= 24000)
+		rate = 24000;
+	else if (rate >= 22050)
+		rate = 22050;
+	else if (rate >= 21970)
+		rate = 21970;
+	else if (rate >= 16000)
+		rate = 16000;
+	else if (rate >= 14647)
+		rate = 14647;
+	else if (rate >= 10985)
+		rate = 10985;
+	else if (rate >= 10666)
+		rate = 10666;
+	else
+		rate = 8000;
+
+	/* Select the clock divisor */
+	uda->regs.stat0 &= ~(STAT0_SC_MASK);
+	switch (rate) {
+	case 8000:
+	case 10985:
+	case 22050:
+	case 24000:
+		uda->regs.stat0 |= STAT0_SC_512FS;
+		break;
+	case 16000:
+	case 21970:
+	case 44100:
+	case 48000:
+		uda->regs.stat0 |= STAT0_SC_256FS;
+		break;
+	case 10666:
+	case 14647:
+	case 29400:
+	case 32000:
+		uda->regs.stat0 |= STAT0_SC_384FS;
+		break;
+	}
+
+	sa1111_set_audio_rate(devptr, rate);
+	uda1341_sync(devptr);
+}
 
 // Module specific stuff
 
@@ -1303,10 +1345,10 @@ sa1111_audio_test(struct sa1111_dev *devptr) {
 
 	unsigned int i=0;
 	unsigned int sample;
-	u16 left;
-	u16 sadr;
-
-	while (i < fanfare_short_wav_len-33) {
+	unsigned int sadr;
+	s16 left;
+	unsigned int round=0;
+	while (i < octanestart_wav_len-32) {
 		// Simple approach - as long as FIFO not empty, feed it 8 lwords (16bit right / 16bit left)of data
 
 		// check how many elements we can write
@@ -1319,17 +1361,48 @@ sa1111_audio_test(struct sa1111_dev *devptr) {
 		// (8-val)-lword burst write to fill fifo
 		for(sadr=0; sadr<(8-val); sadr++) {
 			// Shift mono left channel into 32bit sample to l/r channel words
-			left=(fanfare_short_wav[i] << 8) | fanfare_short_wav[i+1];
+			left  = octanestart_wav[i];
+			left  = (left-0x80) << 8; //Convert 8bit unsigned to 16bit signed
 
-			sample = ((left<<16) | (left));
+			sample  = left & 0x0000FFFF;
+			sample  = (sample << 16) & 0xFFFF0000;
+			sample  = sample | (left & 0x0000FFFF);
 			sa1111_sac_writereg(devptr, sample, SA1111_SADR+(sadr*4));
-			i+=2;
+			i++;
 		}
-		
+
+		if (round==0) {
+			// Readout status register and fifo levlel
+			val = sa1111_sac_readreg(devptr, SA1111_SASR0);
+			printk(KERN_INFO "j720 sa1111 SASR0: 0x%lxh\n", val);
+
+			val = (val >> 8) & 0x0f;
+			printk(KERN_INFO "j720 sa1111 Tx FIFO level: %d\n", val);
+
+			printk(KERN_INFO "j720 sa1111 Tx left channel 8bit  data: %lx\n", octanestart_wav[i]);
+			printk(KERN_INFO "j720 sa1111 Tx left channel 16bit data: %lx\n", left);
+			printk(KERN_INFO "j720 sa1111 Tx sample data            : %lx\n", sample);
+			round++;
+		}
+
 		// Wait until FIFO not full
 		do {
 			val = sa1111_sac_readreg(devptr, SA1111_SASR0);
 		} while((val & SASR0_TNF)==0);
+	
+		if (round==1) {
+			// Readout status register and fifo levlel
+			val = sa1111_sac_readreg(devptr, SA1111_SASR0);
+			printk(KERN_INFO "j720 sa1111 SASR0: 0x%lxh\n", val);
+
+			val = (val >> 8) & 0x0f;
+			printk(KERN_INFO "j720 sa1111 Tx FIFO level: %d\n", val);
+
+			printk(KERN_INFO "j720 sa1111 Tx left channel 8bit  data: %lx\n", octanestart_wav[i]);
+			printk(KERN_INFO "j720 sa1111 Tx left channel 16bit data: %lx\n", left);
+			printk(KERN_INFO "j720 sa1111 Tx sample data            : %lx\n", sample);
+			round++;
+		}	
 	}
 }
 
@@ -1405,9 +1478,11 @@ static void sa1111_audio_init(struct sa1111_dev *devptr) {
 
 	// Set samplerate
 	sa1111_set_audio_rate(devptr, 22050);
-
 	int rate = sa1111_get_audio_rate(devptr);
 	printk(KERN_INFO "j720 sa1111 audio samplerate: %d\n", rate);
+
+	// Reset the CODEC to factory defaults
+// What if we don't mess with it? Should be initialized by wince	uda1341_reset(devptr);
 
 	printk(KERN_INFO "done\n");
 }
@@ -1433,9 +1508,13 @@ static int snd_jornada720_probe(struct sa1111_dev *devptr) {
 	if (machine_is_jornada720()) {
 		// Call the SA1111 Audio init function
 		sa1111_audio_init(devptr);
-		
-		err = uda1341_open(devptr);
-		if (err < 0) {
+
+		// Test hardware setup
+		sa1111_audio_test(devptr);
+
+		// Program UDA1341 driver defaults
+		// err = uda1341_open(devptr); <<- THIS IS BROKEN! Leaving the WinCE initialization seems to be better ;-)
+		if (1==0 && err < 0) {
 			return err;
 			printk(KERN_ERR "Jornada 720 soundcard could not initialize UDA1341\n");
 		}
@@ -1443,9 +1522,6 @@ static int snd_jornada720_probe(struct sa1111_dev *devptr) {
 		printk(KERN_ERR "Jornada 720 soundcard not supported on this hardware\n");
 		return -ENODEV;
 	}
-
-	// Test hardware setup by playing a sound
-	sa1111_audio_test(devptr);
 
 	// Register sound card with ALSA subsystem
 	err = snd_card_new(&devptr->dev, 0, id, THIS_MODULE, sizeof(struct snd_jornada720), &card);
