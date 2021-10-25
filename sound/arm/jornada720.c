@@ -51,11 +51,12 @@
 #include <linux/device.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
-#include <mach/hardware.h>
-#include <asm/hardware/sa1111.h>
-#include <asm/mach-types.h>
-#include <mach/jornada720.h>
 #include <asm/irq.h>
+#include <asm/dma.h>
+#include <mach/jornada720.h>
+#include <mach/hardware.h>
+#include <asm/mach-types.h>
+#include <asm/hardware/sa1111.h>
 
 #include <sound/core.h>
 #include <sound/control.h>
@@ -68,40 +69,69 @@
 
 // Testsound for debugging the codec remove later!
 #include "octane.h"
-// #include "cymbal.c"
 // #include "fanfare.c"
+#include "jornada720.h"
+#include "jornada720-sacdma.h"
+
+// Debugging aid
+#define DEBUG
+#ifdef DEBUG
+#define DPRINTK(msg) printk(msg)
+#else
+#define DPRINTK(msg)
+#endif
 
 MODULE_AUTHOR("Timo Biesenbach <timo.biesenbach@gmail.com>");
 MODULE_DESCRIPTION("Jornada 720 Sound Driver");
 MODULE_LICENSE("GPL");
 MODULE_SUPPORTED_DEVICE("{{ALSA,Jornada 720 Sound Driver}}");
 
-#define MAX_PCM_DEVICES		1
-#define MAX_PCM_SUBSTREAMS	1
-#define MAX_MIDI_DEVICES	0
+// Module specific stuff
+static char *id  = SNDRV_DEFAULT_STR1;
+static bool enable = SNDRV_DEFAULT_ENABLE1;
+static char *model = UDA1344_NAME;
+static int pcm_devs = 1;
+static int pcm_substreams = 1;
+static bool fake_buffer = 1;
 
-/* defaults */
-#define MAX_BUFFER_SIZE		(64*1024)
-#define MIN_PERIOD_SIZE		64
-#define MAX_PERIOD_SIZE		MAX_BUFFER_SIZE
-#define USE_FORMATS 		(SNDRV_PCM_FMTBIT_U8 | SNDRV_PCM_FMTBIT_S16_LE)
-#define USE_RATE		SNDRV_PCM_RATE_CONTINUOUS | SNDRV_PCM_RATE_8000_48000
-#define USE_RATE_MIN		8000
-#define USE_RATE_MAX		48000
-#define USE_CHANNELS_MIN 	1
-#define USE_CHANNELS_MAX 	2
-#define USE_PERIODS_MIN 	1
-#define USE_PERIODS_MAX 	1024
-
-#define MIXER_ADDR_MASTER	0
-#define MIXER_ADDR_MIC		2
-#define MIXER_ADDR_LAST		4
-
+module_param(id, charp, 0444);
+MODULE_PARM_DESC(id, "ID string for Jornada 720 UDA1341 soundcard.");
 
 // Lock 
 static DEFINE_SPINLOCK(snd_jornada720_sa1111_lock);
 
-// SA1111 L3 interface
+// Our Device
+static struct platform_device *device;
+
+// The UDA1344 chip instance
+static struct uda1344 uda_chip = {
+	.volume = DEF_VOLUME | DEF_VOLUME << 8,
+	.bass   = 50 | 50 << 8,
+	.treble = 50 | 50 << 8,
+	.line   = 88 | 88 << 8,
+	.mic    = 88 | 88 << 8,
+	.samplerate = 22050,
+	.regs.stat0   = STAT0_SC_512FS | STAT0_IF_LSB16, // <- set i2s interface and 256f/s
+	.regs.data0_0 = DATA0_VOLUME(0),
+	.regs.data0_1 = DATA1_BASS(0) | DATA1_TREBLE(0),
+	.regs.data0_2 = DATA2_DEEMP_NONE | DATA2_FILTER_FLAT,
+	.regs.data0_3 = DATA3_POWER_ON,
+};
+
+/*
+ * Card model
+ */
+struct jornada720_model model_uda1344 = {
+	.name = "uda1344",
+	.buffer_bytes_max = 16380,
+	.formats = SNDRV_PCM_FMTBIT_S16_LE,
+	.channels_min = 2,
+	.channels_max = 2,
+	.periods_min = 2,
+	.periods_max = 255,
+};
+
+// SA1111 Sound Controller interface
 static inline void         sa1111_sac_writereg(struct sa1111_dev *devptr, unsigned int val, u32 reg) {
 	sa1111_writel(val, devptr->mapbase + reg);
 }
@@ -110,8 +140,8 @@ static inline unsigned int sa1111_sac_readreg(struct sa1111_dev *devptr, u32 reg
 	return sa1111_readl(devptr->mapbase + reg);
 }
 
-// L3 stuff
-static inline void l3_sa1111_send_byte(struct sa1111_dev *devptr, unsigned char addr, unsigned char dat) {
+// Send bytes via SA1111-L3
+static inline void 		   sa1111_l3_send_byte(struct sa1111_dev *devptr, unsigned char addr, unsigned char dat) {
 	int i=0;
 	unsigned int SASCR;
 	unsigned int SACR1;
@@ -119,8 +149,8 @@ static inline void l3_sa1111_send_byte(struct sa1111_dev *devptr, unsigned char 
 	// Make sure only one thread is in the critical section below.
 	spin_lock(&snd_jornada720_sa1111_lock);
 	
-	sa1111_sac_writereg(devptr, 0, SA1111_L3_CAR);
-	sa1111_sac_writereg(devptr, 0, SA1111_L3_CDR);
+	sa1111_sac_writereg(devptr, 0, SA1111_L3_CAR);  // <- why is this needed? check datasheet
+	sa1111_sac_writereg(devptr, 0, SA1111_L3_CDR);  // <- why is this needed? check datasheet
 	mdelay(1);
 
 	SASCR = sa1111_sac_readreg(devptr, SA1111_SASCR);
@@ -131,11 +161,12 @@ static inline void l3_sa1111_send_byte(struct sa1111_dev *devptr, unsigned char 
 	sa1111_sac_writereg(devptr, dat,   SA1111_L3_CDR);
 
 	while (((sa1111_sac_readreg(devptr, SA1111_SASR0) & SASR0_L3WD) == 0) && (i < 1000)) {
-		mdelay(1);
+		mdelay(1); // one msec seems to long
 		i++;
 	}
 	if (((sa1111_sac_readreg(devptr, SA1111_SASR0) & SASR0_L3WD) == 0)) {
-		printk("Avoided crash in l3_sa1111_send_byte. Trying to reset L3.\n"); // <-- need to check this. doesnt sound right.
+		printk(KERN_ERR "Jornada 720 soundcard L3 timeout! Programming error: Make sure SA1111 L3 Clock and bus are enabled bedore using L3 bus.\n");
+		/*
 		SACR1 = sa1111_sac_readreg(devptr, SA1111_SACR1);
 		SACR1 &= ~SACR1_L3EN;
 		sa1111_sac_writereg(devptr, SACR1, SA1111_SACR1);
@@ -145,6 +176,7 @@ static inline void l3_sa1111_send_byte(struct sa1111_dev *devptr, unsigned char 
 		SACR1 = sa1111_sac_readreg(devptr, SA1111_SACR1);
 		SACR1 |= SACR1_L3EN;
 		sa1111_sac_writereg(devptr, SACR1, SA1111_SACR1);
+		*/
 	}
 	
 	SASCR = SASCR_DTS|SASCR_RDD;
@@ -154,276 +186,48 @@ static inline void l3_sa1111_send_byte(struct sa1111_dev *devptr, unsigned char 
 	spin_unlock(&snd_jornada720_sa1111_lock);
 }
 
-// UDA134x stuff
-#define UDA1341_NAME "uda1341"
-
-#define DEF_VOLUME	65
-
-/*
- * UDA134x L3 address and command types
- */
-#define UDA1341_L3ADDR		5
-#define UDA1341_DATA		(UDA1341_L3ADDR << 2 | 0)
-#define UDA1341_STATUS		(UDA1341_L3ADDR << 2 | 2)
-
-struct uda1341_regs {
-	unsigned char	stat0;
-#define STAT0			0x00
-#define STAT0_SC_MASK		(3 << 4)  // System clock
-#define STAT0_SC_512FS		(0 << 4)  // Systemclock 512/s
-#define STAT0_SC_384FS		(1 << 4)  // Systemclock 384f/s
-#define STAT0_SC_256FS		(2 << 4)  // Systemclock 256f/s
-#define STAT0_SC_UNUSED		(3 << 4)  // Systemclock unused
-#define STAT0_IF_MASK		(7 << 1)
-#define STAT0_IF_I2S		(0 << 1)  // Data format I2S
-#define STAT0_IF_LSB16		(1 << 1)  // Data LSB justified 16bit
-#define STAT0_IF_LSB18		(2 << 1)  // Data LSB justified 18bit
-#define STAT0_IF_LSB20		(3 << 1)  // Data LSB justified 20bit
-#define STAT0_IF_MSB		(4 << 1)  // Data MSB justified
-#define STAT0_IF_LSB16MSB	(5 << 1)  // Data MSB justified 16bit
-#define STAT0_IF_LSB18MSB	(6 << 1)  // Data MSB justified 18bit
-#define STAT0_IF_LSB20MSB	(7 << 1)  // Data MSB justified 20bit
-#define STAT0_DC_FILTER		(1 << 0)  // Enable DC filter
-	unsigned char	data0_0;
-#define DATA0			0x00
-#define DATA0_VOLUME_MASK	0x3f
-#define DATA0_VOLUME(x)		(x)
-	unsigned char	data0_1;
-#define DATA1			0x40
-#define DATA1_BASS(x)		((x) << 2)
-#define DATA1_BASS_MASK		(15 << 2)
-#define DATA1_TREBLE(x)		((x))
-#define DATA1_TREBLE_MASK	(3)
-	unsigned char	data0_2;
-#define DATA2			0x80
-#define DATA2_DEEMP_NONE	(0 << 3)
-#define DATA2_DEEMP_32KHz	(1 << 3)
-#define DATA2_DEEMP_44KHz	(2 << 3)
-#define DATA2_DEEMP_48KHz	(3 << 3)
-#define DATA2_MUTE			(1 << 2)
-#define DATA2_FILTER_FLAT	(0 << 0)
-#define DATA2_FILTER_MIN	(1 << 0)
-#define DATA2_FILTER_MAX	(3 << 0)
-	unsigned char	data0_3;
-#define DATA3			0xc0
-#define DATA3_POWER_OFF		(0 << 0)
-#define DATA3_POWER_DAC		(1 << 0)
-#define DATA3_POWER_ADC		(2 << 0)
-#define DATA3_POWER_ON		(3 << 0)
-};
-
-
-struct uda1341 {
-	struct uda1341_regs regs;
-	int		active;
-	unsigned short	volume;
-	unsigned short	bass;
-	unsigned short	treble;
-	unsigned short	line;
-	unsigned short	mic;
-	int		mod_cnt;
-};
-
-// The UDA1341 chip instance
-static struct uda1341 uda_chip = {
-	.volume = DEF_VOLUME | DEF_VOLUME << 8,
-	.bass   = 50 | 50 << 8,
-	.treble = 50 | 50 << 8,
-	.line   = 88 | 88 << 8,
-	.mic    = 88 | 88 << 8,
-	.regs.stat0   = STAT0_SC_512FS | STAT0_IF_LSB16, // <- set i2s interface and 256f/s
-	.regs.data0_0 = DATA0_VOLUME(62 - ((DEF_VOLUME * 61) / 100)),
-	.regs.data0_1 = DATA1_BASS(0) | DATA1_TREBLE(0),
-	.regs.data0_2 = DATA2_DEEMP_NONE | DATA2_FILTER_FLAT,
-	.regs.data0_3 = 0x00, // <-- Data 3 defintion is incomplete. We might not need it 
-};
-
-static void uda1341_sync(struct sa1111_dev *devptr) {
-	struct uda1341 *uda = &uda_chip;
-	l3_sa1111_send_byte(devptr, UDA1341_STATUS, STAT0 | uda->regs.stat0);
-	l3_sa1111_send_byte(devptr, UDA1341_DATA,  DATA0 | uda->regs.data0_0);
-	l3_sa1111_send_byte(devptr, UDA1341_DATA,  DATA1 | uda->regs.data0_1);
-	l3_sa1111_send_byte(devptr, UDA1341_DATA,  DATA2 | uda->regs.data0_2);
-	// l3_sa1111_send_byte(devptr, UDA1341_DATA,DATA3 | uda->regs.data0_3); This is wrong. Poweron default should be ok.
+/* Synchronize registers of the uda_chip instance with the hardware. We need to
+ * mirror it in SW since we can't read data from the chip. */ 
+static void uda1344_sync(struct sa1111_dev *devptr) {
+	struct uda1344 *uda = &uda_chip;
+	sa1111_l3_send_byte(devptr, UDA1344_STATUS, STAT0 | uda->regs.stat0);
+	sa1111_l3_send_byte(devptr, UDA1344_DATA,   DATA0 | uda->regs.data0_0);
+	sa1111_l3_send_byte(devptr, UDA1344_DATA,   DATA1 | uda->regs.data0_1);
+	sa1111_l3_send_byte(devptr, UDA1344_DATA,   DATA2 | uda->regs.data0_2);
+	sa1111_l3_send_byte(devptr, UDA1344_DATA,   DATA3 | uda->regs.data0_3);
 }
 
-static void uda1341_cmd_init(struct sa1111_dev *devptr) {
-	struct uda1341 *uda = &uda_chip;
+/* Initialize the 1344 with some sensible defaults and turn on power. */
+static int uda1344_open(struct sa1111_dev *devptr) {
+	struct uda1344 *uda = &uda_chip;
 	uda->active = 1;
-	// Synchronize the configuration from uda_chip
-	uda1341_sync(devptr);
-}
-/*
-static int uda1341_update_direct(struct sa1111_dev *devptr, int cmd, void *arg) {
-	struct uda1341 *uda = &uda_chip;
-	struct l3_gain *v = arg;
-	char newreg;
-	int val;
-
-	switch (cmd) {
-	case L3_SET_VOLUME: / * set volume.  val =  0 to 100 => 62 to 1 * /
-		uda->regs.data0_0 = DATA0_VOLUME(62 - ((v->left * 61) / 100));
-		newreg = uda->regs.data0_0 | DATA0;
-		break;
-
-	case L3_SET_BASS:   / * set bass.    val = 50 to 100 => 0 to 12 * /
-		val = v->left - 50;
-		if (val < 0)
-			val = 0;
-		uda->regs.data0_1 &= ~DATA1_BASS_MASK;
-		uda->regs.data0_1 |= DATA1_BASS((val * 12) / 50);
-		newreg = uda->regs.data0_1 | DATA1;
-		break;
-
-	case L3_SET_TREBLE: / * set treble.  val = 50 to 100 => 0 to 3 * /
-		val = v->left - 50;
-		if (val < 0)
-			val = 0;
-		uda->regs.data0_1 &= ~DATA1_TREBLE_MASK;
-		uda->regs.data0_1 |= DATA1_TREBLE((val * 3) / 50);
-		newreg = uda->regs.data0_1 | DATA1;
-		break;
-
-	default:
-		return -EINVAL;
-	}		
-
-	if (uda->active)
-		l3_sa1111_send_byte(devptr, UDA1341_DATA, newreg);
-	return 0;
-}
-*/
-
-/**
- * Initialize the 1344 with some sensible defaults and turn on power.
- */
-static void uda1344_reset(struct sa1111_dev *devptr) {
-	unsigned char val; 
-
-	val = STAT0 | STAT0_IF_I2S | STAT0_SC_512FS;
-	l3_sa1111_send_byte(devptr, UDA1341_STATUS, val);
-	printk(KERN_INFO "j720 uda1341 STAT0 programmed with: 0x%lxh\n", val);
-
-	val = DATA0 | DATA0_VOLUME(0);  // <-- 0db volume : max
-	l3_sa1111_send_byte(devptr, UDA1341_DATA, val);
-	printk(KERN_INFO "j720 uda1341 DATA0 programmed with: 0x%lxh\n", val);
-
-	val = DATA1 | DATA1_BASS(0) | DATA1_TREBLE(0);  // <-- 0db volume : max
-	l3_sa1111_send_byte(devptr, UDA1341_DATA, val);
-	printk(KERN_INFO "j720 uda1341 DATA1 programmed with: 0x%lxh\n", val);
-
-	val = DATA2 | DATA2_DEEMP_NONE | DATA2_FILTER_FLAT;
-	l3_sa1111_send_byte(devptr, UDA1341_DATA, val);
-	printk(KERN_INFO "j720 uda1341 DATA3 programmed with: 0x%lxh\n", val);
-
-	val = DATA3 | DATA3_POWER_ON;
-	l3_sa1111_send_byte(devptr, UDA1341_DATA, val);
-	printk(KERN_INFO "j720 uda1341 DATA3 programmed with: 0x%lxh\n", val);
-}
-
-/*
-#define REC_MASK	(SOUND_MASK_LINE | SOUND_MASK_MIC)
-#define DEV_MASK	(REC_MASK | SOUND_MASK_VOLUME | SOUND_MASK_BASS | SOUND_MASK_TREBLE)
-
-static int uda1341_mixer_ioctl(struct l3_client *clnt, int cmd, void *arg)
-{
-	struct uda1341 *uda = clnt->driver_data;
-	struct l3_gain gain;
-	int val, nr = _IOC_NR(cmd), ret = 0;
-
-	if (cmd == SOUND_MIXER_INFO) {
-		struct mixer_info mi;
-
-		strncpy(mi.id, "UDA1341", sizeof(mi.id));
-		strncpy(mi.name, "Philips UDA1341", sizeof(mi.name));
-		mi.modify_counter = uda->mod_cnt;
-		return copy_to_user(arg, &mi, sizeof(mi));
-	}
-
-	if (_IOC_DIR(cmd) & _IOC_WRITE) {
-		ret = get_user(val, (int *)arg);
-		if (ret)
-			goto out;
-
-		gain.left    = val & 255;
-		gain.right   = val >> 8;
-		gain.channel = 0;
-
-		switch (nr) {
-		case SOUND_MIXER_VOLUME:
-			uda->volume = val;
-			uda->mod_cnt++;
-			uda1341_update_direct(clnt, L3_SET_VOLUME, &gain);
-			break;
-
-		case SOUND_MIXER_BASS:
-			uda->bass = val;
-			uda->mod_cnt++;
-			uda1341_update_direct(clnt, L3_SET_BASS, &gain);
-			break;
-
-		case SOUND_MIXER_TREBLE:
-			uda->treble = val;
-			uda->mod_cnt++;
-			uda1341_update_direct(clnt, L3_SET_TREBLE, &gain);
-			break;
-
-		case SOUND_MIXER_LINE:
-			ret = -EINVAL;
-			break;
-
-		case SOUND_MIXER_MIC:
-			ret = -EINVAL;
-			break;
-
-		case SOUND_MIXER_RECSRC:
-			break;
-
-		default:
-			ret = -EINVAL;
-		}
-	}
-
-	if (ret == 0 && _IOC_DIR(cmd) & _IOC_READ) {
-		int nr = _IOC_NR(cmd);
-		ret = 0;
-
-		switch (nr) {
-		case SOUND_MIXER_VOLUME:     val = uda->volume;	break;
-		case SOUND_MIXER_BASS:       val = uda->bass;	break;
-		case SOUND_MIXER_TREBLE:     val = uda->treble;	break;
-		case SOUND_MIXER_LINE:       val = uda->line;	break;
-		case SOUND_MIXER_MIC:        val = uda->mic;	break;
-		case SOUND_MIXER_RECSRC:     val = REC_MASK;	break;
-		case SOUND_MIXER_RECMASK:    val = REC_MASK;	break;
-		case SOUND_MIXER_DEVMASK:    val = DEV_MASK;	break;
-		case SOUND_MIXER_CAPS:       val = 0;		break;
-		case SOUND_MIXER_STEREODEVS: val = 0;		break;
-		default:	val = 0;     ret = -EINVAL;	break;
-		}
-
-		if (ret == 0)
-			ret = put_user(val, (int *)arg);
-	}
-out:
-	return ret;
-}
-*/
-
-static int uda1341_open(struct sa1111_dev *devptr) {
-	uda1341_cmd_init(devptr);
+	uda->volume = DEF_VOLUME | DEF_VOLUME << 8;
+	uda->bass   = 50 | 50 << 8;
+	uda->treble = 50 | 50 << 8;
+	uda->line   = 88 | 88 << 8;
+	uda->mic    = 88 | 88 << 8;
+	uda->samplerate = 22050;
+	uda->regs.stat0   = STAT0_SC_512FS | STAT0_IF_I2S;
+	uda->regs.data0_0 = DATA0_VOLUME(0);
+	uda->regs.data0_1 = DATA1_BASS(0) | DATA1_TREBLE(0);
+	uda->regs.data0_2 = DATA2_DEEMP_NONE | DATA2_FILTER_FLAT;
+	uda->regs.data0_3 = DATA3_POWER_ON;
+	uda1344_sync(devptr);
 	return 0;
 }
 
-static void uda1341_close(struct sa1111_dev *devptr) {
-	struct uda1341 *uda = &uda_chip;
+/* Close the UDA1344 device, in practice this means we deactivate the power */
+static void uda1344_close(struct sa1111_dev *devptr) {
+	struct uda1344 *uda = &uda_chip;
 	uda->active = 0;
+	uda->regs.data0_3 = DATA3_POWER_OFF;
+	uda1344_sync(devptr);
 }
 
-static void uda1341_set_samplerate(struct sa1111_dev *devptr, long rate) {
-	struct uda1341 *uda = &uda_chip;
+/* Setup the samplerate for both the UDA1344 and the SA1111 devices */
+static void uda1344_set_samplerate(struct sa1111_dev *devptr, long rate) {
+	struct uda1344 *uda = &uda_chip;
 	int clk_div = 0;
-	int clk=0;
 
 	/*
 	 * We have the following clock sources:
@@ -457,6 +261,8 @@ static void uda1341_set_samplerate(struct sa1111_dev *devptr, long rate) {
 		rate = 10666;
 	else
 		rate = 8000;
+	
+	uda->samplerate = rate;
 
 	/* Select the clock divisor */
 	uda->regs.stat0 &= ~(STAT0_SC_MASK);
@@ -482,102 +288,13 @@ static void uda1341_set_samplerate(struct sa1111_dev *devptr, long rate) {
 	}
 
 	sa1111_set_audio_rate(devptr, rate);
-	uda1341_sync(devptr);
+	uda1344_sync(devptr);
 }
 
-// Module specific stuff
-
-static char *id  = SNDRV_DEFAULT_STR1;
-static bool enable = SNDRV_DEFAULT_ENABLE1;
-static char *model = UDA1341_NAME;
-static int pcm_devs = 1;
-static int pcm_substreams = 1;
-static bool fake_buffer = 1;
-
-module_param(id, charp, 0444);
-MODULE_PARM_DESC(id, "ID string for Jornada 720 UDA1341 soundcard.");
-
-static struct platform_device *device;
-
-struct jornada720_timer_ops {
-	int (*create)(struct snd_pcm_substream *);
-	void (*free)(struct snd_pcm_substream *);
-	int (*prepare)(struct snd_pcm_substream *);
-	int (*start)(struct snd_pcm_substream *);
-	int (*stop)(struct snd_pcm_substream *);
-	snd_pcm_uframes_t (*pointer)(struct snd_pcm_substream *);
-};
-
-#define get_jornada720_ops(substream) \
-	(*(const struct jornada720_timer_ops **)(substream)->runtime->private_data)
-
-struct jornada720_model {
-	const char *name;
-	int (*playback_constraints)(struct snd_pcm_runtime *runtime);
-	int (*capture_constraints)(struct snd_pcm_runtime *runtime);
-	u64 formats;
-	size_t buffer_bytes_max;
-	size_t period_bytes_min;
-	size_t period_bytes_max;
-	unsigned int periods_min;
-	unsigned int periods_max;
-	unsigned int rates;
-	unsigned int rate_min;
-	unsigned int rate_max;
-	unsigned int channels_min;
-	unsigned int channels_max;
-};
-
-struct snd_jornada720 {
-	struct snd_card *card;
-	struct jornada720_model *model;
-	struct snd_pcm *pcm;
-	struct snd_pcm_hardware pcm_hw;
-	spinlock_t mixer_lock;
-	int mixer_volume[MIXER_ADDR_LAST+1][2];
-	int capture_source[MIXER_ADDR_LAST+1][2];
-	int iobox;
-	struct snd_kcontrol *cd_volume_ctl;
-	struct snd_kcontrol *cd_switch_ctl;
-};
-
-/*
- * card models
- */
-
-struct jornada720_model model_uda1341 = {
-	.name = "uda1341",
-	.buffer_bytes_max = 16380,
-	.formats = SNDRV_PCM_FMTBIT_S16_LE,
-	.channels_min = 2,
-	.channels_max = 2,
-	.periods_min = 2,
-	.periods_max = 255,
-};
-
-/*
- * system timer interface
- */
-
-struct jornada720_systimer_pcm {
-	/* ops must be the first item */
-	const struct jornada720_timer_ops *timer_ops;
-	spinlock_t lock;
-	struct timer_list timer;
-	unsigned long base_time;
-	unsigned int frac_pos;	/* fractional sample position (based HZ) */
-	unsigned int frac_period_rest;
-	unsigned int frac_buffer_size;	/* buffer_size * HZ */
-	unsigned int frac_period_size;	/* period_size * HZ */
-	unsigned int rate;
-	int elapsed;
-	struct snd_pcm_substream *substream;
-};
 
 static void jornada720_systimer_rearm(struct jornada720_systimer_pcm *dpcm)
 {
-	dpcm->timer.expires = jiffies +
-		(dpcm->frac_period_rest + dpcm->rate - 1) / dpcm->rate;
+	dpcm->timer.expires = jiffies + (dpcm->frac_period_rest + dpcm->rate - 1) / dpcm->rate;
 	add_timer(&dpcm->timer);
 }
 
@@ -697,26 +414,31 @@ static struct jornada720_timer_ops jornada720_systimer_ops = {
  * PCM interface
  */
 
-static int jornada720_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
-{
+/** Start / Stop PCM playback */
+/* In reality calls timer_ops_ runtime private data */
+static int jornada720_pcm_trigger(struct snd_pcm_substream *substream, int cmd) {
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
+		DPRINTK(KERN_INFO "jornada720_pcm_trigger START / RESUME\n");	
 		return get_jornada720_ops(substream)->start(substream);
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_SUSPEND:
+		DPRINTK(KERN_INFO "jornada720_pcm_trigger STOP / SUSPEND\n");
 		return get_jornada720_ops(substream)->stop(substream);
 	}
 	return -EINVAL;
 }
 
-static int jornada720_pcm_prepare(struct snd_pcm_substream *substream)
-{
+/* In reality calls timer_ops_ runtime private data */
+static int jornada720_pcm_prepare(struct snd_pcm_substream *substream) {
+	DPRINTK(KERN_INFO "jornada720_pcm_prepare\n");	
 	return get_jornada720_ops(substream)->prepare(substream);
 }
 
-static snd_pcm_uframes_t jornada720_pcm_pointer(struct snd_pcm_substream *substream)
-{
+/* In reality calls timer_ops_ runtime private data */
+static snd_pcm_uframes_t jornada720_pcm_pointer(struct snd_pcm_substream *substream) {
+	DPRINTK(KERN_INFO "jornada720_pcm_pointer\n");	
 	return get_jornada720_ops(substream)->pointer(substream);
 }
 
@@ -739,8 +461,9 @@ static struct snd_pcm_hardware jornada720_pcm_hardware = {
 	.fifo_size =		0,
 };
 
-static int jornada720_pcm_hw_params(struct snd_pcm_substream *substream, struct snd_pcm_hw_params *hw_params)
-{
+/* Allocate DMA memory pages */
+static int jornada720_pcm_hw_params(struct snd_pcm_substream *substream, struct snd_pcm_hw_params *hw_params) {
+	DPRINTK(KERN_INFO "jornada720_pcm_hw_params\n");
 	if (fake_buffer) {
 		/* runtime->dma_bytes has to be set manually to allow mmap */
 		substream->runtime->dma_bytes = params_buffer_bytes(hw_params);
@@ -749,14 +472,14 @@ static int jornada720_pcm_hw_params(struct snd_pcm_substream *substream, struct 
 	return snd_pcm_lib_malloc_pages(substream, params_buffer_bytes(hw_params));
 }
 
-static int jornada720_pcm_hw_free(struct snd_pcm_substream *substream)
-{
+static int jornada720_pcm_hw_free(struct snd_pcm_substream *substream) {
+	DPRINTK(KERN_INFO "jornada720_pcm_hw_free\n");		
 	if (fake_buffer) return 0;
 	return snd_pcm_lib_free_pages(substream);
 }
 
-static int jornada720_pcm_open(struct snd_pcm_substream *substream)
-{
+static int jornada720_pcm_open(struct snd_pcm_substream *substream) {
+	DPRINTK(KERN_INFO "jornada720_pcm_open\n");	
 	struct snd_jornada720 *jornada720 = snd_pcm_substream_chip(substream);
 	struct jornada720_model *model = jornada720->model;
 	struct snd_pcm_runtime *runtime = substream->runtime;
@@ -793,8 +516,8 @@ static int jornada720_pcm_open(struct snd_pcm_substream *substream)
 	return 0;
 }
 
-static int jornada720_pcm_close(struct snd_pcm_substream *substream)
-{
+static int jornada720_pcm_close(struct snd_pcm_substream *substream) {
+	DPRINTK(KERN_INFO "jornada720_pcm_close\n");
 	get_jornada720_ops(substream)->free(substream);
 	return 0;
 }
@@ -833,23 +556,18 @@ static int alloc_fake_buffer(void)
 	return 0;
 }
 
-static int jornada720_pcm_copy(struct snd_pcm_substream *substream,
-			  int channel, snd_pcm_uframes_t pos,
-			  void __user *dst, snd_pcm_uframes_t count)
-{
+static int jornada720_pcm_copy(struct snd_pcm_substream *substream, int channel, snd_pcm_uframes_t pos, void __user *dst, snd_pcm_uframes_t count) {
+	DPRINTK(KERN_INFO "jornada720_pcm_copy\n");
 	return 0; /* do nothing */
 }
 
-static int jornada720_pcm_silence(struct snd_pcm_substream *substream,
-			     int channel, snd_pcm_uframes_t pos,
-			     snd_pcm_uframes_t count)
-{
+static int jornada720_pcm_silence(struct snd_pcm_substream *substream, int channel, snd_pcm_uframes_t pos, snd_pcm_uframes_t count) {
+	DPRINTK(KERN_INFO "jornada720_pcm_silence\n");
 	return 0; /* do nothing */
 }
 
-static struct page *jornada720_pcm_page(struct snd_pcm_substream *substream,
-				   unsigned long offset)
-{
+static struct page *jornada720_pcm_page(struct snd_pcm_substream *substream, unsigned long offset) {
+	DPRINTK(KERN_INFO "jornada720_pcm_page\n");
 	return virt_to_page(jornada720_page[substream->stream]); /* the same page */
 }
 
@@ -878,12 +596,12 @@ static struct snd_pcm_ops jornada720_pcm_ops_no_buf = {
 	.page =		jornada720_pcm_page,
 };
 
-static int snd_card_jornada720_pcm(struct snd_jornada720 *jornada720, int device, int substreams)
-{
+/* Initialize the J720 pcm playback buffers */
+static int snd_card_jornada720_pcm(struct snd_jornada720 *jornada720, int device, int substreams) {
 	struct snd_pcm *pcm;
 	struct snd_pcm_ops *ops;
 	int err;
-
+	DPRINTK(KERN_INFO "snd_card_jornada720_pcm\n");
 	err = snd_pcm_new(jornada720->card, "Jornada720 PCM", device, substreams, substreams, &pcm);
 	if (err < 0) return err;
 
@@ -995,50 +713,6 @@ static int snd_jornada720_capsrc_put(struct snd_kcontrol *kcontrol, struct snd_c
 	return change;
 }
 
-static int snd_jornada720_iobox_info(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_info *info) {
-	const char *const names[] = { "None", "CD Player" };
-	return snd_ctl_enum_info(info, 1, 2, names);
-}
-
-static int snd_jornada720_iobox_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *value) {
-	struct snd_jornada720 *jornada720 = snd_kcontrol_chip(kcontrol);
-
-	value->value.enumerated.item[0] = jornada720->iobox;
-	return 0;
-}
-
-static int snd_jornada720_iobox_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *value) {
-	struct snd_jornada720 *jornada720 = snd_kcontrol_chip(kcontrol);
-	int changed;
-
-	if (value->value.enumerated.item[0] > 1)
-		return -EINVAL;
-
-	changed = value->value.enumerated.item[0] != jornada720->iobox;
-	if (changed) {
-		jornada720->iobox = value->value.enumerated.item[0];
-
-		if (jornada720->iobox) {
-			jornada720->cd_volume_ctl->vd[0].access &=
-				~SNDRV_CTL_ELEM_ACCESS_INACTIVE;
-			jornada720->cd_switch_ctl->vd[0].access &=
-				~SNDRV_CTL_ELEM_ACCESS_INACTIVE;
-		} else {
-			jornada720->cd_volume_ctl->vd[0].access |=
-				SNDRV_CTL_ELEM_ACCESS_INACTIVE;
-			jornada720->cd_switch_ctl->vd[0].access |=
-				SNDRV_CTL_ELEM_ACCESS_INACTIVE;
-		}
-
-		snd_ctl_notify(jornada720->card, SNDRV_CTL_EVENT_MASK_INFO,
-			       &jornada720->cd_volume_ctl->id);
-		snd_ctl_notify(jornada720->card, SNDRV_CTL_EVENT_MASK_INFO,
-			       &jornada720->cd_switch_ctl->id);
-	}
-
-	return changed;
-}
-
 static struct snd_kcontrol_new snd_jornada720_controls[] = {
 JORNADA720_VOLUME("Master Volume", 0, MIXER_ADDR_MASTER),
 JORNADA720_CAPSRC("Master Capture Switch", 0, MIXER_ADDR_MASTER),
@@ -1054,16 +728,11 @@ static int snd_card_jornada720_new_mixer(struct snd_jornada720 *jornada720) {
 
 	spin_lock_init(&jornada720->mixer_lock);
 	strcpy(card->mixername, "Jornada 720 Mixer");
-	jornada720->iobox = 1;
 
 	for (idx = 0; idx < ARRAY_SIZE(snd_jornada720_controls); idx++) {
 		kcontrol = snd_ctl_new1(&snd_jornada720_controls[idx], jornada720);
 		err = snd_ctl_add(card, kcontrol);
 		if (err < 0) return err;
-
-		if (!strcmp(kcontrol->id.name, "CD Volume")) jornada720->cd_volume_ctl = kcontrol;
-		else if (!strcmp(kcontrol->id.name, "CD Capture Switch")) jornada720->cd_switch_ctl = kcontrol;
-
 	}
 	return 0;
 }
@@ -1188,6 +857,19 @@ static void jornada720_proc_init(struct snd_jornada720 *chip) {
 #define jornada720_proc_init(x)
 #endif /* CONFIG_SND_DEBUG && CONFIG_PROC_FS */
 
+
+sa1111_test_dma(struct sa1111_dev *devptr) {
+	dmach_t channel;
+	printk(KERN_ERR "j720 sa1111 Request DMA channel.\n");
+	int err = sa1111_sac_request_dma(&channel, "sa1111", 0);
+	if (err<0)
+		printk(KERN_ERR "j720 sa1111 Could not request DMA channel.\n");
+	else {
+		printk(KERN_ERR "j720 sa1111 Release DMA channel.\n");
+		sa1111_cleanup_sac_dma(channel);
+	}		
+}
+
 // Test hardware setup by playing a sound from hardcoded WAV file
 sa1111_audio_test(struct sa1111_dev *devptr) {
 	// Clear SAC status register bits 5 & 6 (Tx/Rx FIFO Status)
@@ -1287,7 +969,8 @@ static inline struct sa1111 *sa1111_chip_driver(struct sa1111_dev *sadev)
 	return (struct sa1111 *)dev_get_drvdata(sadev->dev.parent);
 }
 
-// Copied from "glue audio driver"
+// Copied from "glue audio driver" and heavily modified
+// Will initialize the SA1111 and its L3 hardware
 static void sa1111_audio_init(struct sa1111_dev *devptr) {
 	// For register bitbanging
 	unsigned int val; 
@@ -1304,9 +987,11 @@ static void sa1111_audio_init(struct sa1111_dev *devptr) {
 	PPDR |= PPC_LDD3 | PPC_LDD4;
 	PPSR |= PPC_LDD4; /* enable speaker */
 	PPSR |= PPC_LDD3; /* enable microphone */
-
+	printk(KERN_INFO "j720 sa1111 speaker/mic pre-amps enabled\n");
+	
 	// deselect AC Link
 	sa1111_select_audio_mode(devptr, SA1111_AUDIO_I2S);
+	printk(KERN_INFO "j720 sa1111 I2S protocol enabled\n");
 
 	/* Enable the I2S clock and L3 bus clock. This is a function in another SA1111 block
 	 * which is why we need the sachip stuff (should probably be a function in sa1111.c/h)
@@ -1314,6 +999,7 @@ static void sa1111_audio_init(struct sa1111_dev *devptr) {
 	val = sa1111_readl(sachip->base + SA1111_SKPCR);
 	val|= (SKPCR_I2SCLKEN | SKPCR_L3CLKEN);
 	sa1111_writel(val, sachip->base + SA1111_SKPCR);
+	printk(KERN_INFO "j720 sa1111 I2S and L3 clocks enabled\n");
 
 	/* Activate and reset the Serial Audio Controller */
 	val = sa1111_sac_readreg(devptr, SA1111_SACR0);
@@ -1323,25 +1009,20 @@ static void sa1111_audio_init(struct sa1111_dev *devptr) {
 	val = sa1111_sac_readreg(devptr, SA1111_SACR0);
 	val &= ~SACR0_RST;
 	sa1111_sac_writereg(devptr, val, SA1111_SACR0);
-	
+	printk(KERN_INFO "j720 sa1111 SAC reset and enabled\n");
+
 	/* For I2S, BIT_CLK is supplied internally. The "SA-1111
 	 * Specification Update" mentions that the BCKD bit should
 	 * be interpreted as "0 = output". Default clock divider
 	 * is 22.05kHz.
-	 *
-	 * Select I2S, L3 bus. "Recording" and "Replaying"
-	 * (receive and transmit) are enabled.
 	 */
 	sa1111_sac_writereg(devptr, SACR1_L3EN, SA1111_SACR1);
+	printk(KERN_INFO "j720 sa1111 L3 interface enabled\n");
 
 	// Set samplerate
 	sa1111_set_audio_rate(devptr, 22050);
 	int rate = sa1111_get_audio_rate(devptr);
 	printk(KERN_INFO "j720 sa1111 audio samplerate: %d\n", rate);
-
-	// Reset the CODEC to defaults
-	// What if we don't mess with it? Should be initialized by wince	
-	uda1344_reset(devptr);
 
 	printk(KERN_INFO "done\n");
 }
@@ -1359,7 +1040,7 @@ static void sa1111_audio_init(struct sa1111_dev *devptr) {
 static int snd_jornada720_probe(struct sa1111_dev *devptr) {
 	struct snd_card *card;
 	struct snd_jornada720 *jornada720;
-	struct jornada720_model *m = NULL, **mdl;
+	struct jornada720_model *m = NULL;
 	int idx, err;
 	int dev = 0;
 
@@ -1367,16 +1048,19 @@ static int snd_jornada720_probe(struct sa1111_dev *devptr) {
 	if (machine_is_jornada720()) {
 		// Call the SA1111 Audio init function
 		sa1111_audio_init(devptr);
+		
+		// Program UDA1344 driver defaults
+		err = uda1344_open(devptr);
+		if (err < 0) {
+			return err;
+			printk(KERN_ERR "Jornada 720 soundcard could not initialize UDA1344 Codec\n");
+		}
 
-		// Test hardware setup
+		// Test hardware setup (play startup sound)
 		sa1111_audio_test(devptr);
 
-		// Program UDA1344 driver defaults
-		// err = uda1341_open(devptr); <<- THIS IS BROKEN! Leaving the WinCE initialization seems to be better ;-)
-		if (1==0 && err < 0) {
-			return err;
-			printk(KERN_ERR "Jornada 720 soundcard could not initialize UDA1341\n");
-		}
+		// Test DMA
+		sa1111_test_dma(devptr);
 	} else {
 		printk(KERN_ERR "Jornada 720 soundcard not supported on this hardware\n");
 		return -ENODEV;
@@ -1388,10 +1072,12 @@ static int snd_jornada720_probe(struct sa1111_dev *devptr) {
 
 	jornada720 = card->private_data;
 	jornada720->card = card;
+	// save the pointers to our HW instances for use in the pcm routines
+	jornada720->pchip_uda1344 = &uda_chip;
+	jornada720->pdev_sa1111 = devptr;
 
-	printk(KERN_INFO "snd-jornada720: Using model '%s' for card %i\n", model_uda1341.name, card->number);
-	m = jornada720->model = &model_uda1341;
-
+	printk(KERN_INFO "snd-jornada720: Using model '%s' for card %i\n", model_uda1344.name, card->number);
+	m = jornada720->model = &model_uda1344;
 
 	if (pcm_substreams < 1)	pcm_substreams = 1;
 	if (pcm_substreams > MAX_PCM_SUBSTREAMS) pcm_substreams = MAX_PCM_SUBSTREAMS;
@@ -1445,8 +1131,8 @@ static int snd_jornada720_probe(struct sa1111_dev *devptr) {
 }
 
 // static int snd_jornada720_remove(struct platform_device *devptr)
-static int snd_jornada720_remove(struct sa1111_dev *devptr)
-{
+static int snd_jornada720_remove(struct sa1111_dev *devptr) {
+	uda1344_close(devptr);
 	snd_card_free(sa1111_get_drvdata(devptr));
 	return 0;
 }
@@ -1477,7 +1163,6 @@ static SIMPLE_DEV_PM_OPS(snd_jornada720_pm, snd_jornada720_suspend, snd_jornada7
 #endif
 
 #define SND_JORNADA720_DRIVER	"snd_jornada720"
-
 static struct sa1111_driver snd_jornada720_driver = {
         .drv = {
                 .name   = SND_JORNADA720_DRIVER,
