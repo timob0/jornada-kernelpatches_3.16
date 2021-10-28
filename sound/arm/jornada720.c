@@ -51,6 +51,7 @@
 #include <linux/device.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/dma-mapping.h> 
 #include <asm/irq.h>
 #include <asm/dma.h>
 #include <mach/jornada720.h>
@@ -68,8 +69,8 @@
 #include <sound/uda134x.h>
 
 // Testsound for debugging the codec remove later!
-#include "octane.h"
-// #include "fanfare.c"
+#include "octane.h"   // <- 8 bit mono startup sound 11khz
+#include "pcm1622.h"  // <- 16bit stereo sound 22 khz
 #include "jornada720.h"
 #include "jornada720-sacdma.h"
 
@@ -858,16 +859,59 @@ static void jornada720_proc_init(struct snd_jornada720 *chip) {
 #endif /* CONFIG_SND_DEBUG && CONFIG_PROC_FS */
 
 
-sa1111_test_dma(struct sa1111_dev *devptr) {
+sa1111_test_dma(struct sa1111_dev *devptr) { 
 	dmach_t channel;
-	printk(KERN_ERR "j720 sa1111 Request DMA channel.\n");
-	int err = sa1111_sac_request_dma(&channel, "sa1111", 0);
-	if (err<0)
-		printk(KERN_ERR "j720 sa1111 Could not request DMA channel.\n");
-	else {
-		printk(KERN_ERR "j720 sa1111 Release DMA channel.\n");
-		sa1111_cleanup_sac_dma(channel);
-	}		
+
+	printk(KERN_ERR "j720 sa1111 Init DMA registes.\n");
+	sa1111_reset_sac_dma(devptr);
+
+	//Double buffer
+	dma_addr_t dma_phys_addr[2]; // <-- phys address
+	void *     dma_virt_addr[2]; // <-- virtual address
+
+	const unsigned int dma_block_size = (1<<12); // 4kb buffer block
+
+	printk(KERN_ERR "j720 sa1111 Allocate 4kb DMA memory buffer\n");
+	dma_virt_addr[0] = dma_alloc_coherent(devptr, dma_block_size, &dma_phys_addr[0], 0);
+	dma_virt_addr[1] = dma_alloc_coherent(devptr, dma_block_size, &dma_phys_addr[1], 0);
+
+	if (dma_virt_addr[0]!=NULL && dma_virt_addr[1]!=NULL) {
+		char* sample = sample = &pcm1622s_wav[0];
+		int cnt=0;
+
+		// Init memory buffer #1 for first playback
+		printk(KERN_ERR "j720 sa1111 Copy data to DMA memory\n");
+		memcpy(dma_virt_addr[cnt%2], sample, dma_block_size);
+
+		// Loop to replay the whole sample in 8kb iterations
+		for (sample = &pcm1622s_wav[0]; sample < &pcm1622s_wav[pcm1622s_wav_len] - (dma_block_size*2); sample+=dma_block_size) {
+
+			// Start playing the sound using DMA transfer
+			printk(KERN_ERR "j720 sa1111 Starting SAC DMA for playback from src address 0x%lxh.\n", sample);
+			int err = start_sa1111_sac_dma(devptr, dma_phys_addr[cnt%2], dma_block_size, DMA_DIR_OUT);
+			if (err<0) {
+				printk(KERN_ERR "j720 sa1111 Start DMA failed, terminating!\n");
+				break; // <- exit loop	
+			}
+			cnt++;
+
+			// Copy to allocated memory buffer
+			printk(KERN_ERR "j720 sa1111 Copy data to DMA memory\n");
+			memcpy(dma_virt_addr[cnt%2], sample, dma_block_size);
+
+			// Wait for transfer to complete
+			while(!done_sa1111_sac_dma(devptr, DMA_DIR_OUT)) {
+				udelay(1);
+			}
+		}
+		// Free memory
+		printk(KERN_ERR "j720 sa1111 Release DMA memory\n");
+		dma_free_coherent(devptr, dma_block_size, dma_virt_addr[0], dma_virt_addr[0]);
+		dma_free_coherent(devptr, dma_block_size, dma_virt_addr[1], dma_virt_addr[1]);
+	} else {
+			printk(KERN_ERR "j720 sa1111 Could not allocate DMA memory!\n");
+	}
+
 }
 
 // Test hardware setup by playing a sound from hardcoded WAV file

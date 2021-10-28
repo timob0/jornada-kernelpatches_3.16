@@ -37,77 +37,160 @@
 #include "jornada720-sacdma.h"
 
 #define DEBUG
-#ifdef DEBUG
-#define DPRINTK( s, arg... )  printk( "dma<%s>: " s, dma->device_id , ##arg )
-#else
-#define DPRINTK( x... )
-#endif
 
 /* Our DMA channels */
 sa1100_dma_t dma_chan[SA1111_SAC_DMA_CHANNELS];
 
-/*
- * Control register structure for the SA1111 SAC DMA
- */
-void sa1111_reset_sac_dma(struct sa1111_dev *devptr, dmach_t channel) {
-	sa1100_dma_t *dma = &dma_chan[channel];
-	dma->regs->SAD_CS = 0;
-	mdelay(1);
-	dma->dma_a = dma->dma_b = 0;
+// SA1111 Sound Controller interface
+static inline void         sa1111_sac_writereg(struct sa1111_dev *devptr, unsigned int val, u32 reg) {
+	sa1111_writel(val, devptr->mapbase + reg);
 }
 
-int start_sa1111_sac_dma(struct sa1111_dev *devptr, sa1100_dma_t *dma, dma_addr_t dma_ptr, size_t size) {
-  	dma_regs_t *sac_regs = dma->regs;
-	DPRINTK(" SAC DMA %cCS %02x at %08x (%d)\n", (sac_regs==SA1111_SADTCS)?'T':'R', sac_regs->SAD_CS, dma_ptr, size);
+static inline unsigned int sa1111_sac_readreg(struct sa1111_dev *devptr, u32 reg) {
+	return sa1111_readl(devptr->mapbase + reg);
+}
 
-	#ifdef DEBUG
-	//Useless warning
-	if( size < SA1111_SAC_DMA_MIN_XFER ) printk(KERN_ERR "Warning: SAC xfers below %u bytes may be buggy! (%u bytes)\n", SA1111_SAC_DMA_MIN_XFER, size);
-	#endif
 
-	if( dma->dma_a && dma->dma_b ){
-	  	DPRINTK("  neither engine available! (A %d, B %d)\n",
-			dma->dma_a, dma->dma_b);
-	  	return -1;
+/*
+ * Control register structure for the SA1111 SAC DMA.
+ * As per the datasheet there is no such thing as "reset". Also several
+ * register bits are read only.
+ * We'll clear some bits and set addresses and counts to zero.
+ */
+void sa1111_reset_sac_dma(struct sa1111_dev *devptr) {
+	unsigned int val;
+	val = 0;
+	// TX
+	sa1111_sac_writereg(devptr, val, SA1111_SADTCS); // Zero control register
+	sa1111_sac_writereg(devptr, val, SA1111_SADTSA); // Zero address A register
+	sa1111_sac_writereg(devptr, val, SA1111_SADTCA); // Zero count A register
+	sa1111_sac_writereg(devptr, val, SA1111_SADTSB); // Zero address B register
+	sa1111_sac_writereg(devptr, val, SA1111_SADTCB); // Zero count B register
+
+	//RX
+	sa1111_sac_writereg(devptr, val, SA1111_SADRCS);
+	sa1111_sac_writereg(devptr, val, SA1111_SADRSA); // Zero address A register
+	sa1111_sac_writereg(devptr, val, SA1111_SADRCA); // Zero count A register
+	sa1111_sac_writereg(devptr, val, SA1111_SADRSB); // Zero address B register
+	sa1111_sac_writereg(devptr, val, SA1111_SADRCB); // Zero count B register
+	printk(KERN_INFO "j720 sa1111 SAC DMA registers reset.\n");
+
+	// Program SACR0 DMA Thresholds
+	val = sa1111_sac_readreg(devptr, SA1111_SACR0);
+	val = val & 0xFF; //Mask out bits 8-31
+	val = val | (0x07 << 8);    // set TFTH to 7 (transmit fifo threshold)
+	val = val | (0x07 << 12);   // set RFTH to 7 (receive  fifo threshold)
+	sa1111_sac_writereg(devptr, val, SA1111_SACR0);
+	printk(KERN_INFO "j720 sa1111 SAC SACRO 0x%lxh\n", val);
+	printk(KERN_INFO "j720 sa1111 SAC reset and enabled\n");
+}
+/* Start a DMA transfer to/from dma_ptr with size bytes 
+ * either in transmit or receive direction
+ *   SA1111_SADTCS		0x34 <<- tx control register
+	 SA1111_SADTSA		0x38 <<- DMA tx buffer a start address
+	 SA1111_SADTCA		0x3c <<- DMA tx buffer a count
+	 SA1111_SADTSB		0x40 <<- DMA tx buffer b start address
+	 SA1111_SADTCB		0x44 <<- DMA tx buffer b count
+
+	 SA1111_SADRCS		0x48 <<- tx control register
+	 SA1111_SADRSA		0x4c <<- DMA Rx buffer a start address
+	 SA1111_SADRCA		0x50 <<- DMA Rx buffer a count
+	 SA1111_SADRSB		0x54 <<- DMA Rx buffer b start address
+	 SA1111_SADRCB		0x58 <<- DMA Rx buffer b count
+
+	Logic:
+	Register base address to use = 0x34 + direction (0x14) 
+	         channel addr/count:   + channel (0x08)
+ */
+
+// Each dma start will increment this counter (one per direction). If even use ch A, if odd use B
+static unsigned int dma_cnt[2] = {0, 0};
+
+/* Find out if dma for the given direction is finished
+ * will figure out the channel (A or B) based on the dma_cnt
+ */
+int done_sa1111_sac_dma(struct sa1111_dev *devptr, int direction) {
+	unsigned int val;
+	unsigned int REG_CS    = SA1111_SADTCS + (direction * DMA_REG_RX_OFS);  // Control register
+
+	// read status register
+	val = sa1111_sac_readreg(devptr, REG_CS);
+	if (dma_cnt[direction] % 2) {
+		// Channel B
+		if (val | SAD_CS_DBDB) return 1;
+	} 
+	else  {
+		// Channel A
+		if (val | SAD_CS_DBDA) return 1;
 	}
-	
-	// Useless warning?
-	#ifdef DEBUG
-	if( sa1111_check_dma_bug(dma_ptr) ) printk(KERN_ERR "Warning: DMA address %08x is buggy!\n", dma_ptr);
-	#endif
 
-	if( (dma->last_dma || dma->dma_b) && dma->dma_a == 0 ){
-	  	if( sac_regs->SAD_CS & SAD_CS_DBDB ){
-		  	DPRINTK("  awaiting \"done B\" interrupt, not starting\n");
-			return -1;
-		}
-		sac_regs->SAD_SA = SA1111_DMA_ADDR((u_int)dma_ptr);
-		sac_regs->SAD_CA = size;
-		sac_regs->SAD_CS = SAD_CS_DSTA | SAD_CS_DEN;
-		++dma->dma_a;
-		DPRINTK("  with A [%02lx %08lx %04lx]\n", sac_regs->SAD_CS,
-			sac_regs->SAD_SA, sac_regs->SAD_CA);
-	} else {
-	  	if( sac_regs->SAD_CS & SAD_CS_DBDA) { 
-			DPRINTK("  awaiting \"done A\" interrupt, not starting\n");
-			return -1;
-		}
-		sac_regs->SAD_SB = SA1111_DMA_ADDR((u_int)dma_ptr);
-		sac_regs->SAD_CB = size;
-		sac_regs->SAD_CS = SAD_CS_DSTB | SAD_CS_DEN;
-		++dma->dma_b;
-		DPRINTK("  with B [%02lx %08lx %04lx]\n", sac_regs->SAD_CS,	sac_regs->SAD_SB, sac_regs->SAD_CB);
+	return 0;
+}
+
+int start_sa1111_sac_dma(struct sa1111_dev *devptr, dma_addr_t dma_ptr, size_t size, int direction) {
+	unsigned int val;
+	unsigned int REG_CS    = SA1111_SADTCS + (direction * DMA_REG_RX_OFS);  // Control register
+	unsigned int REG_ADDR  = SA1111_SADTSA + (direction * DMA_REG_RX_OFS);  // Address register
+	unsigned int REG_COUNT = SA1111_SADTCA + (direction * DMA_REG_RX_OFS);  // Count register
+
+	/* Make sure direction is 0|1 */
+	if (direction<0 || direction>1) {
+		printk("Invalid direction %d\n", direction);
+		return -1;
 	}
-	/* Additional delay to avoid DMA engine lockup during record: */
-	// if( sac_regs == (dma_regs_t*)&SA1111_SADRCS )
-	//  	mdelay(1);	/* NP : wouuuh! ugly... */
+
+	/* Read control register */
+	val = sa1111_sac_readreg(devptr, REG_CS);
+
+	// we will alternate between channels A and B
+	// this might or might not need be done for each direction separately.
+	if (++dma_cnt[direction] % 2) {
+		printk(" using DMA channel B\n");
+		// Add offset for channel b registers to address / count regs
+		REG_ADDR  += DMA_CH_B;
+		REG_COUNT += DMA_CH_B;
+
+		// update control reg value
+		val |= SAD_CS_DSTB | SAD_CS_DEN;
+		
+		printk(" using DMA address reg 0x%lxh\n", REG_ADDR);
+		printk(" using DMA count   reg 0x%lxh\n", REG_COUNT);
+		printk(" using DMA control reg 0x%lxh\n", REG_CS);
+
+		printk(" using DMA address     0x%lxh\n", dma_ptr);
+		printk(" using DMA count       0x%lxh\n", size);
+		printk(" using DMA control     0x%lxh\n", val);
+
+		sa1111_sac_writereg(devptr, dma_ptr, REG_ADDR);
+		sa1111_sac_writereg(devptr, size, REG_COUNT);
+		sa1111_sac_writereg(devptr, val, REG_CS);
+	} 
+	else {
+		printk(" using DMA channel A\n");
+		REG_ADDR  += DMA_CH_A;
+		REG_COUNT += DMA_CH_A;
+
+		// update control reg value
+		val |= SAD_CS_DSTA | SAD_CS_DEN;
+
+		printk(" using DMA address reg 0x%lxh\n", REG_ADDR);
+		printk(" using DMA count   reg 0x%lxh\n", REG_COUNT);
+		printk(" using DMA control reg 0x%lxh\n", REG_CS);
+
+		printk(" using DMA address     0x%lxh\n", dma_ptr);
+		printk(" using DMA count       0x%lxh\n", size);
+		printk(" using DMA control     0x%lxh\n", val);
+
+		sa1111_sac_writereg(devptr, dma_ptr, REG_ADDR);
+		sa1111_sac_writereg(devptr, size, REG_COUNT);
+		sa1111_sac_writereg(devptr, val, REG_CS);
+	}
 	return 0;
 }
 
 static void sa1111_sac_dma_irq(struct sa1111_dev *devptr, int irq, void *dev_id, struct pt_regs *regs) {
   	sa1100_dma_t *dma = (sa1100_dma_t *) dev_id;
-	DPRINTK("irq %d, last DMA serviced was %c, CS %02x\n", irq,
-		dma->last_dma?'B':'A', dma->regs->SAD_CS);
+	printk("irq %d, last DMA serviced was %c, CS %02x\n", irq, dma->last_dma?'B':'A', dma->regs->SAD_CS);
 	/* Occasionally, one of the DMA engines (A or B) will
 	 * lock up. We try to deal with this by quietly kicking
 	 * the control register for the afflicted transfer
@@ -122,13 +205,13 @@ static void sa1111_sac_dma_irq(struct sa1111_dev *devptr, int irq, void *dev_id,
 	 */
 	if(irq==AUDXMTDMADONEA || irq==AUDRCVDMADONEA){
 	  	if(dma->last_dma == 0){
-		  	DPRINTK("DMA B has locked up!\n");
+		  	printk("DMA B has locked up!\n");
 			dma->regs->SAD_CS = 0;
 			mdelay(1);
 			dma->dma_a = dma->dma_b = 0;
 		} else {
 		  	if(dma->dma_a == 0)
-			  	DPRINTK("spurious SAC IRQ %d\n", irq);
+			  	printk("spurious SAC IRQ %d\n", irq);
 			else {
 			  	--dma->dma_a;
 				/* Servicing the SAC DMA engines too quickly
@@ -143,13 +226,13 @@ static void sa1111_sac_dma_irq(struct sa1111_dev *devptr, int irq, void *dev_id,
 		dma->last_dma = 0;
 	} else {
 	  	if(dma->last_dma == 1){
-		  	DPRINTK("DMA A has locked up!\n");
+		  	printk("DMA A has locked up!\n");
 			dma->regs->SAD_CS = 0;
 			mdelay(1);
 			dma->dma_a = dma->dma_b = 0;
 		} else {
 		  	if(dma->dma_b == 0)
-			  	DPRINTK("spurious SAC IRQ %d\n", irq);
+			  	printk("spurious SAC IRQ %d\n", irq);
 			else {
 			  	--dma->dma_b;
 				/* See lock-up note above. */
@@ -230,13 +313,4 @@ void sa1111_cleanup_sac_dma(struct sa1111_dev *devptr, dmach_t channel) {
 	sa1100_dma_t *dma = &dma_chan[channel];
 	free_irq(AUDXMTDMADONEA + (channel - SA1111_SAC_DMA_BASE), (void*) dma);
 	free_irq(AUDXMTDMADONEB + (channel - SA1111_SAC_DMA_BASE), (void*) dma);
-}
-
-static int sa1111_init_sac_dma(struct sa1111_dev *devptr)
-{
-	int channel = SA1111_SAC_DMA_BASE;
-	dma_chan[channel++].regs = (dma_regs_t *) SA1111_SADTCS;
-	dma_chan[channel++].regs = (dma_regs_t *) SA1111_SADTCS;
-
-	return 0;
 }
