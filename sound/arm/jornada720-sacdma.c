@@ -36,7 +36,8 @@
 
 #include "jornada720-sacdma.h"
 
-#define DEBUG
+#undef DEBUG
+// #define DEBUG
 
 /* Our DMA channels */
 sa1100_dma_t dma_chan[SA1111_SAC_DMA_CHANNELS];
@@ -117,11 +118,11 @@ int done_sa1111_sac_dma(struct sa1111_dev *devptr, int direction) {
 	val = sa1111_sac_readreg(devptr, REG_CS);
 	if (dma_cnt[direction] % 2) {
 		// Channel B
-		if (val | SAD_CS_DBDB) return 1;
+		if (val & SAD_CS_DBDB) return 1;
 	} 
 	else  {
 		// Channel A
-		if (val | SAD_CS_DBDA) return 1;
+		if (val & SAD_CS_DBDA) return 1;
 	}
 
 	return 0;
@@ -145,14 +146,15 @@ int start_sa1111_sac_dma(struct sa1111_dev *devptr, dma_addr_t dma_ptr, size_t s
 	// we will alternate between channels A and B
 	// this might or might not need be done for each direction separately.
 	if (++dma_cnt[direction] % 2) {
-		printk(" using DMA channel B\n");
 		// Add offset for channel b registers to address / count regs
 		REG_ADDR  += DMA_CH_B;
 		REG_COUNT += DMA_CH_B;
 
 		// update control reg value
 		val |= SAD_CS_DSTB | SAD_CS_DEN;
-		
+		#ifdef DEBUG
+		printk(" using DMA channel B\n");
+
 		printk(" using DMA address reg 0x%lxh\n", REG_ADDR);
 		printk(" using DMA count   reg 0x%lxh\n", REG_COUNT);
 		printk(" using DMA control reg 0x%lxh\n", REG_CS);
@@ -160,18 +162,19 @@ int start_sa1111_sac_dma(struct sa1111_dev *devptr, dma_addr_t dma_ptr, size_t s
 		printk(" using DMA address     0x%lxh\n", dma_ptr);
 		printk(" using DMA count       0x%lxh\n", size);
 		printk(" using DMA control     0x%lxh\n", val);
-
+		#endif
 		sa1111_sac_writereg(devptr, dma_ptr, REG_ADDR);
 		sa1111_sac_writereg(devptr, size, REG_COUNT);
 		sa1111_sac_writereg(devptr, val, REG_CS);
 	} 
 	else {
-		printk(" using DMA channel A\n");
 		REG_ADDR  += DMA_CH_A;
 		REG_COUNT += DMA_CH_A;
 
 		// update control reg value
 		val |= SAD_CS_DSTA | SAD_CS_DEN;
+		#ifdef DEBUG
+		printk(" using DMA channel A\n");
 
 		printk(" using DMA address reg 0x%lxh\n", REG_ADDR);
 		printk(" using DMA count   reg 0x%lxh\n", REG_COUNT);
@@ -180,137 +183,10 @@ int start_sa1111_sac_dma(struct sa1111_dev *devptr, dma_addr_t dma_ptr, size_t s
 		printk(" using DMA address     0x%lxh\n", dma_ptr);
 		printk(" using DMA count       0x%lxh\n", size);
 		printk(" using DMA control     0x%lxh\n", val);
-
+		#endif
 		sa1111_sac_writereg(devptr, dma_ptr, REG_ADDR);
 		sa1111_sac_writereg(devptr, size, REG_COUNT);
 		sa1111_sac_writereg(devptr, val, REG_CS);
 	}
 	return 0;
-}
-
-static void sa1111_sac_dma_irq(struct sa1111_dev *devptr, int irq, void *dev_id, struct pt_regs *regs) {
-  	sa1100_dma_t *dma = (sa1100_dma_t *) dev_id;
-	printk("irq %d, last DMA serviced was %c, CS %02x\n", irq, dma->last_dma?'B':'A', dma->regs->SAD_CS);
-	/* Occasionally, one of the DMA engines (A or B) will
-	 * lock up. We try to deal with this by quietly kicking
-	 * the control register for the afflicted transfer
-	 * direction.
-	 *
-	 * Note for the debugging-inclined: we currently aren't
-	 * properly flushing the DMA engines during channel
-	 * shutdown. A slight hiccup at the beginning of playback
-	 * after a channel has been stopped can be heard as
-	 * evidence of this. Programmatically, this shows up
-	 * as either a locked engine, or a spurious interrupt. -jd
-	 */
-	if(irq==AUDXMTDMADONEA || irq==AUDRCVDMADONEA){
-	  	if(dma->last_dma == 0){
-		  	printk("DMA B has locked up!\n");
-			dma->regs->SAD_CS = 0;
-			mdelay(1);
-			dma->dma_a = dma->dma_b = 0;
-		} else {
-		  	if(dma->dma_a == 0)
-			  	printk("spurious SAC IRQ %d\n", irq);
-			else {
-			  	--dma->dma_a;
-				/* Servicing the SAC DMA engines too quickly
-				 * after they issue a DONE interrupt causes
-				 * them to lock up.
-				 */
-				if(irq==AUDRCVDMADONEA || irq==AUDRCVDMADONEB)
-				  	mdelay(1);
-			}
-		}
-		dma->regs->SAD_CS = SAD_CS_DBDA | SAD_CS_DEN; /* w1c */
-		dma->last_dma = 0;
-	} else {
-	  	if(dma->last_dma == 1){
-		  	printk("DMA A has locked up!\n");
-			dma->regs->SAD_CS = 0;
-			mdelay(1);
-			dma->dma_a = dma->dma_b = 0;
-		} else {
-		  	if(dma->dma_b == 0)
-			  	printk("spurious SAC IRQ %d\n", irq);
-			else {
-			  	--dma->dma_b;
-				/* See lock-up note above. */
-				if(irq==AUDRCVDMADONEA || irq==AUDRCVDMADONEB)
-				  	mdelay(1);
-			}
-		}
-		dma->regs->SAD_CS = SAD_CS_DBDB | SAD_CS_DEN; /* w1c */
-		dma->last_dma = 1;
-	}
-	/* NP: maybe this shouldn't be called in all cases? */
-	// sa1100_dma_done (dma);
-}
-
-int sa1111_sac_request_dma(struct sa1111_dev *devptr, dmach_t *channel, const char *device_id, unsigned int direction) {
-	sa1100_dma_t *dma = NULL;
-	int ch, irq, err;
-	*channel = -1;		/* to be sure we catch the freeing of a misregistered channel */
-	ch = SA1111_SAC_DMA_BASE + direction;
-	if (!channel_is_sa1111_sac(ch)) {
-	  	printk(KERN_ERR "%s: invalid SA-1111 SAC DMA channel (%d)\n", device_id, ch);
-		return -1;
-	}
-	dma = &dma_chan[ch];
-	if (xchg(&dma->in_use, 1) == 1) {
-	  	printk(KERN_ERR "%s: SA-1111 SAC DMA channel %d in use\n", device_id, ch);
-		return -EBUSY;
-	}
-	irq = AUDXMTDMADONEA + direction;
-	err = request_irq(irq, sa1111_sac_dma_irq, IRQF_TRIGGER_RISING, device_id, (void *) dma);
-	if (err) {
-		printk(KERN_ERR "%s: unable to request IRQ %d for DMA channel %d (A)\n", device_id, irq, ch);
-		dma->in_use = 0;
-		return err;
-	}
-	irq = AUDXMTDMADONEB + direction;
-	err = request_irq(irq, sa1111_sac_dma_irq, IRQF_TRIGGER_RISING, device_id, (void *) dma);
-	if (err) {
-		printk(KERN_ERR "%s: unable to request IRQ %d for DMA channel %d (B)\n", device_id, irq, ch);
-		dma->in_use = 0;
-		return err;
-	}
-	*channel = ch;
-	dma->device_id = device_id;
-	dma->callback = NULL;
-	dma->spin_size = 0;
-	return 0;
-}
-
-/* FIXME:  need to complete the three following functions */
-int sa1111_dma_get_current(struct sa1111_dev *devptr, dmach_t channel, void **buf_id, dma_addr_t *addr) {
-	sa1100_dma_t *dma = &dma_chan[channel];
-	int flags, ret;
-	local_irq_save(flags);
-	if (dma->curr && dma->spin_ref <= 0) {
-		dma_buf_t *buf = dma->curr;
-		if (buf_id)
-			*buf_id = buf->id;
-		/* not fully accurate but still... */
-		*addr = buf->dma_ptr;
-		ret = 0;
-	} else {
-		if (buf_id)
-			*buf_id = NULL;
-		*addr = 0;
-		ret = -ENXIO;
-	}
-	local_irq_restore(flags);
-	return ret;
-}
-int sa1111_dma_stop(struct sa1111_dev *devptr, dmach_t channel) {
-	return 0;
-}
-int sa1111_dma_resume(struct sa1111_dev *devptr, dmach_t channel) {
-	return 0;
-}
-void sa1111_cleanup_sac_dma(struct sa1111_dev *devptr, dmach_t channel) {
-	sa1100_dma_t *dma = &dma_chan[channel];
-	free_irq(AUDXMTDMADONEA + (channel - SA1111_SAC_DMA_BASE), (void*) dma);
-	free_irq(AUDXMTDMADONEB + (channel - SA1111_SAC_DMA_BASE), (void*) dma);
 }

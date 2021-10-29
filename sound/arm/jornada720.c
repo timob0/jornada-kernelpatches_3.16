@@ -75,7 +75,8 @@
 #include "jornada720-sacdma.h"
 
 // Debugging aid
-#define DEBUG
+#undef DEBUG
+// #define DEBUG
 #ifdef DEBUG
 #define DPRINTK(msg) printk(msg)
 #else
@@ -859,10 +860,55 @@ static void jornada720_proc_init(struct snd_jornada720 *chip) {
 #endif /* CONFIG_SND_DEBUG && CONFIG_PROC_FS */
 
 
-sa1111_test_dma(struct sa1111_dev *devptr) { 
+/* Simplistic handler routine to test the SA1111 Audio DMA Done interrupts. */
+static void sa1111_test_irqhandler(int irq, void *dev_id, struct pt_regs *regs)  {
+	switch (irq) {
+		case AUDXMTDMADONEA: printk("sa1111_test_irqhandler: AUDXMTDMADONEA\n"); break;
+		case AUDXMTDMADONEB: printk("sa1111_test_irqhandler: AUDXMTDMADONEB\n"); break;
+		case AUDRCVDMADONEA: printk("sa1111_test_irqhandler: AUDRCVDMADONEA\n"); break;
+		case AUDRCVDMADONEB: printk("sa1111_test_irqhandler: AUDXMTDMADONEB\n"); break;
+	}
+}
+
+static int sa1111_test_irqrequest(struct sa1111_dev *devptr, unsigned int direction) {
+	printk(KERN_ERR "sa1111_test_irqrequest\n");
+	int ch, irq, err;
+
+	// direction: 0 play, 1 record
+	irq = AUDXMTDMADONEA + direction;
+	
+	err = request_irq(irq, sa1111_test_irqhandler, IRQF_TRIGGER_NONE, SA1111_DRIVER_NAME(devptr), NULL);
+	if (err) {
+		printk(KERN_ERR "unable to request IRQ %d for DMA channel %d (A)\n", irq, ch);
+		return err;
+	}
+
+	irq = AUDXMTDMADONEB + direction;
+	err = request_irq(irq, sa1111_test_irqhandler, IRQF_TRIGGER_NONE, SA1111_DRIVER_NAME(devptr), NULL);
+	if (err) {
+		printk(KERN_ERR "unable to request IRQ %d for DMA channel %d (B)\n", irq, ch);
+		return err;
+	}
+
+	return 0;
+}
+
+/* Release the IRQ handler */
+static void sa1111_test_irqrelease(struct sa1111_dev *devptr, unsigned int direction) {
+	int irq;
+	
+	printk(KERN_ERR "sa1111_test_irqrequest\n");
+	irq = AUDXMTDMADONEA + direction;
+	free_irq(irq, NULL);
+	irq = AUDXMTDMADONEB + direction;
+	free_irq(irq, NULL);
+}
+
+/* DMA test routine for the SA1111 SAC. Will replay a hardcoded ~500kb 16bit 22khz stereo sample.*/
+static void sa1111_test_dma(struct sa1111_dev *devptr) { 
 	dmach_t channel;
 
-	printk(KERN_ERR "j720 sa1111 Init DMA registes.\n");
+	printk(KERN_INFO "j720 sa1111 Init DMA registes.\n");
 	sa1111_reset_sac_dma(devptr);
 
 	//Double buffer
@@ -871,7 +917,15 @@ sa1111_test_dma(struct sa1111_dev *devptr) {
 
 	const unsigned int dma_block_size = (1<<12); // 4kb buffer block
 
-	printk(KERN_ERR "j720 sa1111 Allocate 4kb DMA memory buffer\n");
+	// Setup IRQ Handler....
+	printk(KERN_INFO "j720 sa1111 Request interrupts\n");
+	int err = sa1111_test_irqrequest(devptr, DMA_DIR_OUT);
+	if (err<0) {
+		printk(KERN_ERR "j720 sa1111 Could not setup IRQ handler, exiting!\n");
+		goto out;
+	}
+
+	printk(KERN_INFO "j720 sa1111 Allocate 4kb DMA memory buffer\n");
 	dma_virt_addr[0] = dma_alloc_coherent(devptr, dma_block_size, &dma_phys_addr[0], 0);
 	dma_virt_addr[1] = dma_alloc_coherent(devptr, dma_block_size, &dma_phys_addr[1], 0);
 
@@ -880,14 +934,17 @@ sa1111_test_dma(struct sa1111_dev *devptr) {
 		int cnt=0;
 
 		// Init memory buffer #1 for first playback
-		printk(KERN_ERR "j720 sa1111 Copy data to DMA memory\n");
+		printk(KERN_INFO "j720 sa1111 Copy data to DMA memory\n");
 		memcpy(dma_virt_addr[cnt%2], sample, dma_block_size);
 
 		// Loop to replay the whole sample in 8kb iterations
 		for (sample = &pcm1622s_wav[0]; sample < &pcm1622s_wav[pcm1622s_wav_len] - (dma_block_size*2); sample+=dma_block_size) {
 
 			// Start playing the sound using DMA transfer
-			printk(KERN_ERR "j720 sa1111 Starting SAC DMA for playback from src address 0x%lxh.\n", sample);
+			#ifdef DEBUG
+			printk(KERN_DEBUG "j720 sa1111 Starting SAC DMA for playback from src address 0x%lxh.\n", sample);
+			#endif
+
 			int err = start_sa1111_sac_dma(devptr, dma_phys_addr[cnt%2], dma_block_size, DMA_DIR_OUT);
 			if (err<0) {
 				printk(KERN_ERR "j720 sa1111 Start DMA failed, terminating!\n");
@@ -896,7 +953,10 @@ sa1111_test_dma(struct sa1111_dev *devptr) {
 			cnt++;
 
 			// Copy to allocated memory buffer
-			printk(KERN_ERR "j720 sa1111 Copy data to DMA memory\n");
+			#ifdef DEBUG
+			printk(KERN_DEBUG "j720 sa1111 Copy data to DMA memory\n");
+			#endif
+			
 			memcpy(dma_virt_addr[cnt%2], sample, dma_block_size);
 
 			// Wait for transfer to complete
@@ -905,17 +965,21 @@ sa1111_test_dma(struct sa1111_dev *devptr) {
 			}
 		}
 		// Free memory
-		printk(KERN_ERR "j720 sa1111 Release DMA memory\n");
+		printk(KERN_INFO "j720 sa1111 Release DMA memory\n");
 		dma_free_coherent(devptr, dma_block_size, dma_virt_addr[0], dma_virt_addr[0]);
 		dma_free_coherent(devptr, dma_block_size, dma_virt_addr[1], dma_virt_addr[1]);
 	} else {
 			printk(KERN_ERR "j720 sa1111 Could not allocate DMA memory!\n");
 	}
 
+ out:
+	printk(KERN_INFO "j720 sa1111 Release IRQs\n"); 	
+    sa1111_test_irqrelease(devptr, DMA_DIR_OUT);
+ 	printk(KERN_INFO "j720 sa1111 sa1111_test_dma end.\n");
 }
 
 // Test hardware setup by playing a sound from hardcoded WAV file
-sa1111_audio_test(struct sa1111_dev *devptr) {
+static void sa1111_audio_test(struct sa1111_dev *devptr) {
 	// Clear SAC status register bits 5 & 6 (Tx/Rx FIFO Status)
 	unsigned int val = SASCR_ROR | SASCR_TUR;
 	sa1111_sac_writereg(devptr, val, SA1111_SASCR);
@@ -955,38 +1019,42 @@ sa1111_audio_test(struct sa1111_dev *devptr) {
 			i++;
 		}
 
+		#ifdef DEBUG
 		if (round==0) {
 			// Readout status register and fifo levlel
 			val = sa1111_sac_readreg(devptr, SA1111_SASR0);
-			printk(KERN_INFO "j720 sa1111 SASR0: 0x%lxh\n", val);
+			printk(KERN_DEBUG "j720 sa1111 SASR0: 0x%lxh\n", val);
 
 			val = (val >> 8) & 0x0f;
-			printk(KERN_INFO "j720 sa1111 Tx FIFO level: %d\n", val);
+			printk(KERN_DEBUG "j720 sa1111 Tx FIFO level: %d\n", val);
 
-			printk(KERN_INFO "j720 sa1111 Tx left channel 8bit  data: %lx\n", octanestart_wav[i]);
-			printk(KERN_INFO "j720 sa1111 Tx left channel 16bit data: %lx\n", left);
-			printk(KERN_INFO "j720 sa1111 Tx sample data            : %lx\n", sample);
+			printk(KERN_DEBUG "j720 sa1111 Tx left channel 8bit  data: %lx\n", octanestart_wav[i]);
+			printk(KERN_DEBUG "j720 sa1111 Tx left channel 16bit data: %lx\n", left);
+			printk(KERN_DEBUG "j720 sa1111 Tx sample data            : %lx\n", sample);
 			round++;
 		}
+		#endif
 
 		// Wait until FIFO not full
 		do {
 			val = sa1111_sac_readreg(devptr, SA1111_SASR0);
 		} while((val & SASR0_TNF)==0);
 	
+		#ifdef DEBUG
 		if (round==1) {
 			// Readout status register and fifo levlel
 			val = sa1111_sac_readreg(devptr, SA1111_SASR0);
-			printk(KERN_INFO "j720 sa1111 SASR0: 0x%lxh\n", val);
+			printk(KERN_DEBUG "j720 sa1111 SASR0: 0x%lxh\n", val);
 
 			val = (val >> 8) & 0x0f;
-			printk(KERN_INFO "j720 sa1111 Tx FIFO level: %d\n", val);
+			printk(KERN_DEBUG "j720 sa1111 Tx FIFO level: %d\n", val);
 
-			printk(KERN_INFO "j720 sa1111 Tx left channel 8bit  data: %lx\n", octanestart_wav[i]);
-			printk(KERN_INFO "j720 sa1111 Tx left channel 16bit data: %lx\n", left);
-			printk(KERN_INFO "j720 sa1111 Tx sample data            : %lx\n", sample);
+			printk(KERN_DEBUG "j720 sa1111 Tx left channel 8bit  data: %lx\n", octanestart_wav[i]);
+			printk(KERN_DEBUG "j720 sa1111 Tx left channel 16bit data: %lx\n", left);
+			printk(KERN_DEBUG "j720 sa1111 Tx sample data            : %lx\n", sample);
 			round++;
-		}	
+		}
+		#endif
 	}
 }
 
