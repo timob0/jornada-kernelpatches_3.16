@@ -76,7 +76,7 @@
 
 // Debugging aid
 #undef DEBUG
-// #define DEBUG
+#define DEBUG
 #ifdef DEBUG
 #define DPRINTK(msg) printk(msg)
 #else
@@ -862,6 +862,7 @@ static void jornada720_proc_init(struct snd_jornada720 *chip) {
 
 /* Simplistic handler routine to test the SA1111 Audio DMA Done interrupts. */
 static void sa1111_test_irqhandler(int irq, void *dev_id, struct pt_regs *regs)  {
+	printk(KERN_ERR "sa1111_test_irqhandler\n");
 	switch (irq) {
 		case AUDXMTDMADONEA: printk("sa1111_test_irqhandler: AUDXMTDMADONEA\n"); break;
 		case AUDXMTDMADONEB: printk("sa1111_test_irqhandler: AUDXMTDMADONEB\n"); break;
@@ -870,38 +871,41 @@ static void sa1111_test_irqhandler(int irq, void *dev_id, struct pt_regs *regs) 
 	}
 }
 
+/* Setup interrupt handling for the transfer completion events from SA1111
+ * Note: request_irq will enable the interrupt handling. We need to tell the
+ * chip to generate them though. 
+ */
 static int sa1111_test_irqrequest(struct sa1111_dev *devptr, unsigned int direction) {
 	printk(KERN_ERR "sa1111_test_irqrequest\n");
-	int ch, irq, err;
+	int ch, irqa, irqb, err;
 
 	// direction: 0 play, 1 record
-	irq = AUDXMTDMADONEA + direction;
-	
-	err = request_irq(irq, sa1111_test_irqhandler, IRQF_TRIGGER_NONE, SA1111_DRIVER_NAME(devptr), NULL);
+	irqa = AUDXMTDMADONEA + direction;
+	err = request_irq(irqa, sa1111_test_irqhandler, IRQF_TRIGGER_RISING, SA1111_DRIVER_NAME(devptr), sa1111_get_drvdata(devptr));
 	if (err) {
-		printk(KERN_ERR "unable to request IRQ %d for DMA channel %d (A)\n", irq, ch);
+		printk(KERN_ERR "unable to request IRQ %d for DMA channel %d (A)\n", irqa, ch);
 		return err;
 	}
 
-	irq = AUDXMTDMADONEB + direction;
-	err = request_irq(irq, sa1111_test_irqhandler, IRQF_TRIGGER_NONE, SA1111_DRIVER_NAME(devptr), NULL);
+	irqb = AUDXMTDMADONEB + direction;
+	err = request_irq(irqb, sa1111_test_irqhandler, IRQF_TRIGGER_RISING, SA1111_DRIVER_NAME(devptr), sa1111_get_drvdata(devptr));
 	if (err) {
-		printk(KERN_ERR "unable to request IRQ %d for DMA channel %d (B)\n", irq, ch);
+		printk(KERN_ERR "unable to request IRQ %d for DMA channel %d (B)\n", irqb, ch);
 		return err;
-	}
-
+	}	
 	return 0;
 }
 
 /* Release the IRQ handler */
 static void sa1111_test_irqrelease(struct sa1111_dev *devptr, unsigned int direction) {
-	int irq;
-	
-	printk(KERN_ERR "sa1111_test_irqrequest\n");
-	irq = AUDXMTDMADONEA + direction;
-	free_irq(irq, NULL);
-	irq = AUDXMTDMADONEB + direction;
-	free_irq(irq, NULL);
+	int irqa, irqb;
+	printk(KERN_ERR "sa1111_test_irqrelease\n");
+
+	irqa = AUDXMTDMADONEA + direction;
+	irqb = AUDXMTDMADONEB + direction;
+
+	free_irq(irqa, sa1111_get_drvdata(devptr));
+	free_irq(irqb, sa1111_get_drvdata(devptr));
 }
 
 /* DMA test routine for the SA1111 SAC. Will replay a hardcoded ~500kb 16bit 22khz stereo sample.*/
@@ -1168,11 +1172,21 @@ static int snd_jornada720_probe(struct sa1111_dev *devptr) {
 			printk(KERN_ERR "Jornada 720 soundcard could not initialize UDA1344 Codec\n");
 		}
 
+		// Turn on...
+		err = sa1111_enable_device(devptr);
+		if (err<0) {
+			printk(KERN_ERR "Jornada 720 soundcard enable device failed.\n");
+			return err;
+		}
+
 		// Test hardware setup (play startup sound)
 		sa1111_audio_test(devptr);
 
 		// Test DMA
 		sa1111_test_dma(devptr);
+
+		// Turn off...
+		sa1111_disable_device(devptr);
 	} else {
 		printk(KERN_ERR "Jornada 720 soundcard not supported on this hardware\n");
 		return -ENODEV;
@@ -1242,7 +1256,6 @@ static int snd_jornada720_probe(struct sa1111_dev *devptr) {
 	return err;
 }
 
-// static int snd_jornada720_remove(struct platform_device *devptr)
 static int snd_jornada720_remove(struct sa1111_dev *devptr) {
 	uda1344_close(devptr);
 	snd_card_free(sa1111_get_drvdata(devptr));
@@ -1284,6 +1297,7 @@ static struct sa1111_driver snd_jornada720_driver = {
         .probe          = snd_jornada720_probe,
         .remove         = snd_jornada720_remove,
 };
+
 
 static void snd_jornada720_unregister_all(void)
 {
