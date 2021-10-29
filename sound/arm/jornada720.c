@@ -293,125 +293,6 @@ static void uda1344_set_samplerate(struct sa1111_dev *devptr, long rate) {
 	uda1344_sync(devptr);
 }
 
-
-static void jornada720_systimer_rearm(struct jornada720_systimer_pcm *dpcm)
-{
-	dpcm->timer.expires = jiffies + (dpcm->frac_period_rest + dpcm->rate - 1) / dpcm->rate;
-	add_timer(&dpcm->timer);
-}
-
-static void jornada720_systimer_update(struct jornada720_systimer_pcm *dpcm)
-{
-	unsigned long delta;
-
-	delta = jiffies - dpcm->base_time;
-	if (!delta)
-		return;
-	dpcm->base_time += delta;
-	delta *= dpcm->rate;
-	dpcm->frac_pos += delta;
-	while (dpcm->frac_pos >= dpcm->frac_buffer_size)
-		dpcm->frac_pos -= dpcm->frac_buffer_size;
-	while (dpcm->frac_period_rest <= delta) {
-		dpcm->elapsed++;
-		dpcm->frac_period_rest += dpcm->frac_period_size;
-	}
-	dpcm->frac_period_rest -= delta;
-}
-
-static int jornada720_systimer_start(struct snd_pcm_substream *substream)
-{
-	struct jornada720_systimer_pcm *dpcm = substream->runtime->private_data;
-	spin_lock(&dpcm->lock);
-	dpcm->base_time = jiffies;
-	jornada720_systimer_rearm(dpcm);
-	spin_unlock(&dpcm->lock);
-	return 0;
-}
-
-static int jornada720_systimer_stop(struct snd_pcm_substream *substream)
-{
-	struct jornada720_systimer_pcm *dpcm = substream->runtime->private_data;
-	spin_lock(&dpcm->lock);
-	del_timer(&dpcm->timer);
-	spin_unlock(&dpcm->lock);
-	return 0;
-}
-
-static int jornada720_systimer_prepare(struct snd_pcm_substream *substream)
-{
-	struct snd_pcm_runtime *runtime = substream->runtime;
-	struct jornada720_systimer_pcm *dpcm = runtime->private_data;
-
-	dpcm->frac_pos = 0;
-	dpcm->rate = runtime->rate;
-	dpcm->frac_buffer_size = runtime->buffer_size * HZ;
-	dpcm->frac_period_size = runtime->period_size * HZ;
-	dpcm->frac_period_rest = dpcm->frac_period_size;
-	dpcm->elapsed = 0;
-
-	return 0;
-}
-
-static void jornada720_systimer_callback(unsigned long data)
-{
-	struct jornada720_systimer_pcm *dpcm = (struct jornada720_systimer_pcm *)data;
-	unsigned long flags;
-	int elapsed = 0;
-	
-	spin_lock_irqsave(&dpcm->lock, flags);
-	jornada720_systimer_update(dpcm);
-	jornada720_systimer_rearm(dpcm);
-	elapsed = dpcm->elapsed;
-	dpcm->elapsed = 0;
-	spin_unlock_irqrestore(&dpcm->lock, flags);
-	if (elapsed)
-		snd_pcm_period_elapsed(dpcm->substream);
-}
-
-static snd_pcm_uframes_t
-jornada720_systimer_pointer(struct snd_pcm_substream *substream)
-{
-	struct jornada720_systimer_pcm *dpcm = substream->runtime->private_data;
-	snd_pcm_uframes_t pos;
-
-	spin_lock(&dpcm->lock);
-	jornada720_systimer_update(dpcm);
-	pos = dpcm->frac_pos / HZ;
-	spin_unlock(&dpcm->lock);
-	return pos;
-}
-
-static int jornada720_systimer_create(struct snd_pcm_substream *substream)
-{
-	struct jornada720_systimer_pcm *dpcm;
-
-	dpcm = kzalloc(sizeof(*dpcm), GFP_KERNEL);
-	if (!dpcm)
-		return -ENOMEM;
-	substream->runtime->private_data = dpcm;
-	init_timer(&dpcm->timer);
-	dpcm->timer.data = (unsigned long) dpcm;
-	dpcm->timer.function = jornada720_systimer_callback;
-	spin_lock_init(&dpcm->lock);
-	dpcm->substream = substream;
-	return 0;
-}
-
-static void jornada720_systimer_free(struct snd_pcm_substream *substream)
-{
-	kfree(substream->runtime->private_data);
-}
-
-static struct jornada720_timer_ops jornada720_systimer_ops = {
-	.create =	jornada720_systimer_create,
-	.free =		jornada720_systimer_free,
-	.prepare =	jornada720_systimer_prepare,
-	.start =	jornada720_systimer_start,
-	.stop =		jornada720_systimer_stop,
-	.pointer =	jornada720_systimer_pointer,
-};
-
 /*
  * PCM interface
  */
@@ -466,17 +347,11 @@ static struct snd_pcm_hardware jornada720_pcm_hardware = {
 /* Allocate DMA memory pages */
 static int jornada720_pcm_hw_params(struct snd_pcm_substream *substream, struct snd_pcm_hw_params *hw_params) {
 	DPRINTK(KERN_INFO "jornada720_pcm_hw_params\n");
-	if (fake_buffer) {
-		/* runtime->dma_bytes has to be set manually to allow mmap */
-		substream->runtime->dma_bytes = params_buffer_bytes(hw_params);
-		return 0;
-	}
 	return snd_pcm_lib_malloc_pages(substream, params_buffer_bytes(hw_params));
 }
 
 static int jornada720_pcm_hw_free(struct snd_pcm_substream *substream) {
 	DPRINTK(KERN_INFO "jornada720_pcm_hw_free\n");		
-	if (fake_buffer) return 0;
 	return snd_pcm_lib_free_pages(substream);
 }
 
@@ -487,8 +362,6 @@ static int jornada720_pcm_open(struct snd_pcm_substream *substream) {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	const struct jornada720_timer_ops *ops;
 	int err;
-
-	ops = &jornada720_systimer_ops;
 
 	err = ops->create(substream);
 	if (err < 0) return err;
@@ -524,55 +397,6 @@ static int jornada720_pcm_close(struct snd_pcm_substream *substream) {
 	return 0;
 }
 
-/*
- * jornada720 buffer handling
- */
-
-static void *jornada720_page[2];
-
-static void free_fake_buffer(void)
-{
-	if (fake_buffer) {
-		int i;
-		for (i = 0; i < 2; i++)
-			if (jornada720_page[i]) {
-				free_page((unsigned long)jornada720_page[i]);
-				jornada720_page[i] = NULL;
-			}
-	}
-}
-
-static int alloc_fake_buffer(void)
-{
-	int i;
-
-	if (!fake_buffer)
-		return 0;
-	for (i = 0; i < 2; i++) {
-		jornada720_page[i] = (void *)get_zeroed_page(GFP_KERNEL);
-		if (!jornada720_page[i]) {
-			free_fake_buffer();
-			return -ENOMEM;
-		}
-	}
-	return 0;
-}
-
-static int jornada720_pcm_copy(struct snd_pcm_substream *substream, int channel, snd_pcm_uframes_t pos, void __user *dst, snd_pcm_uframes_t count) {
-	DPRINTK(KERN_INFO "jornada720_pcm_copy\n");
-	return 0; /* do nothing */
-}
-
-static int jornada720_pcm_silence(struct snd_pcm_substream *substream, int channel, snd_pcm_uframes_t pos, snd_pcm_uframes_t count) {
-	DPRINTK(KERN_INFO "jornada720_pcm_silence\n");
-	return 0; /* do nothing */
-}
-
-static struct page *jornada720_pcm_page(struct snd_pcm_substream *substream, unsigned long offset) {
-	DPRINTK(KERN_INFO "jornada720_pcm_page\n");
-	return virt_to_page(jornada720_page[substream->stream]); /* the same page */
-}
-
 static struct snd_pcm_ops jornada720_pcm_ops = {
 	.open =		jornada720_pcm_open,
 	.close =	jornada720_pcm_close,
@@ -582,20 +406,6 @@ static struct snd_pcm_ops jornada720_pcm_ops = {
 	.prepare =	jornada720_pcm_prepare,
 	.trigger =	jornada720_pcm_trigger,
 	.pointer =	jornada720_pcm_pointer,
-};
-
-static struct snd_pcm_ops jornada720_pcm_ops_no_buf = {
-	.open =		jornada720_pcm_open,
-	.close =	jornada720_pcm_close,
-	.ioctl =	snd_pcm_lib_ioctl,
-	.hw_params =	jornada720_pcm_hw_params,
-	.hw_free =	jornada720_pcm_hw_free,
-	.prepare =	jornada720_pcm_prepare,
-	.trigger =	jornada720_pcm_trigger,
-	.pointer =	jornada720_pcm_pointer,
-	.copy =		jornada720_pcm_copy,
-	.silence =	jornada720_pcm_silence,
-	.page =		jornada720_pcm_page,
 };
 
 /* Initialize the J720 pcm playback buffers */
@@ -608,8 +418,7 @@ static int snd_card_jornada720_pcm(struct snd_jornada720 *jornada720, int device
 	if (err < 0) return err;
 
 	jornada720->pcm = pcm;
-	if (fake_buffer) ops = &jornada720_pcm_ops_no_buf;
-	else             ops = &jornada720_pcm_ops;
+	ops = &jornada720_pcm_ops;
 
 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK, ops);
 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_CAPTURE, ops);
@@ -617,12 +426,11 @@ static int snd_card_jornada720_pcm(struct snd_jornada720 *jornada720, int device
 	pcm->info_flags = 0;
 	strcpy(pcm->name, "Jornada720 PCM");
 
-	if (!fake_buffer) {
-		snd_pcm_lib_preallocate_pages_for_all(pcm,
-			SNDRV_DMA_TYPE_CONTINUOUS,
-			snd_dma_continuous_data(GFP_KERNEL),
-			0, 64*1024);
-	}
+
+	snd_pcm_lib_preallocate_pages_for_all(pcm,
+		SNDRV_DMA_TYPE_CONTINUOUS,
+		snd_dma_continuous_data(GFP_KERNEL),
+		0, 64*1024);
 	return 0;
 }
 
@@ -1302,7 +1110,6 @@ static struct sa1111_driver snd_jornada720_driver = {
 static void snd_jornada720_unregister_all(void)
 {
 	sa1111_driver_unregister(&snd_jornada720_driver);
-	free_fake_buffer();
 }
 
 /** This is the module init, it has no conception of what we are yet, i.e. other than the name implies it does
@@ -1318,11 +1125,13 @@ static int __init alsa_card_jornada720_init(void)
 	if (err < 0)
 		return err;
 
+	/* Maybe allocate the DMA buffers here?
 	err = alloc_fake_buffer();
 	if (err < 0) {
 		sa1111_driver_unregister(&snd_jornada720_driver);
 		return err;
 	}
+	*/
 	return 0;
 }
 
