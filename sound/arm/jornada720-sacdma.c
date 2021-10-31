@@ -35,22 +35,13 @@
 #include <asm/hardware/sa1111.h>
 
 #include "jornada720-sacdma.h"
+#include "jornada720-sac.h"
 
 #undef DEBUG
 // #define DEBUG
 
 /* Our DMA channels */
 sa1100_dma_t dma_chan[SA1111_SAC_DMA_CHANNELS];
-
-// SA1111 Sound Controller interface
-static inline void         sa1111_sac_writereg(struct sa1111_dev *devptr, unsigned int val, u32 reg) {
-	sa1111_writel(val, devptr->mapbase + reg);
-}
-
-static inline unsigned int sa1111_sac_readreg(struct sa1111_dev *devptr, u32 reg) {
-	return sa1111_readl(devptr->mapbase + reg);
-}
-
 
 /*
  * Control register structure for the SA1111 SAC DMA.

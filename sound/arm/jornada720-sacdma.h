@@ -10,13 +10,6 @@
 #ifndef JORNADA720_SACDMA_H
 #define JORNADA720_SACDMA_H
 
-#define CONFIG_SA1111
-
-#define AUDXMTDMADONEA		(32)
-#define AUDRCVDMADONEA		(33)
-#define AUDXMTDMADONEB		(34)
-#define AUDRCVDMADONEB		(35)
-
 #define SA1111_SAC_DMA_CHANNELS 2
 #define SA1111_SAC_XMT_CHANNEL  0
 #define SA1111_SAC_RCV_CHANNEL  1
@@ -72,9 +65,9 @@ typedef struct {
 	int dma_a, dma_b, last_dma; /* SA-1111 specific */
 } sa1100_dma_t;
 
-void sa1111_reset_sac_dma(struct sa1111_dev *devptr);
-int start_sa1111_sac_dma(struct sa1111_dev *devptr, dma_addr_t dma_ptr, size_t size, int direction);
-int done_sa1111_sac_dma(struct sa1111_dev *devptr, int direction);
+extern void sa1111_reset_sac_dma(struct sa1111_dev *devptr);
+extern int start_sa1111_sac_dma(struct sa1111_dev *devptr, dma_addr_t dma_ptr, size_t size, int direction);
+extern int done_sa1111_sac_dma(struct sa1111_dev *devptr, int direction);
 
 int sa1111_dma_get_current(struct sa1111_dev *devptr, dmach_t channel, void **buf_id, dma_addr_t *addr);
 int sa1111_dma_stop(struct sa1111_dev *devptr, dmach_t channel);
