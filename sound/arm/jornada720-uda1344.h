@@ -25,7 +25,6 @@
 #define UDA1344_PERIODS_MIN 2
 #define UDA1344_PERIODS_MAX 255
 
-
 /* UDA134x L3 address and command types */
 #define UDA1344_L3ADDR		0x05
 #define UDA1344_DATA		(UDA1344_L3ADDR << 2 | 0)

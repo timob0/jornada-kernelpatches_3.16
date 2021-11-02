@@ -16,26 +16,10 @@
 #define MAX_PCM_SUBSTREAMS	1
 #define MAX_MIDI_DEVICES	0
 
-/* defaults */
-#define MAX_BUFFER_SIZE		(64*1024)
-#define MIN_PERIOD_SIZE		64
-#define MAX_PERIOD_SIZE		MAX_BUFFER_SIZE
-#define USE_FORMATS 		(SNDRV_PCM_FMTBIT_S16_LE)
-#define USE_RATE			SNDRV_PCM_RATE_CONTINUOUS | SNDRV_PCM_RATE_8000_48000
-#define USE_RATE_MIN		8000
-#define USE_RATE_MAX		48000
-#define USE_CHANNELS_MIN 	1
-#define USE_CHANNELS_MAX 	2
-#define USE_PERIODS_MIN 	1
-#define USE_PERIODS_MAX 	1024
-
+/* Hardware defauls */
 #define MIXER_ADDR_MASTER	0
 #define MIXER_ADDR_MIC		2
 #define MIXER_ADDR_LAST		4
-
-#define get_jornada720_ops(substream) \
-	(*(const struct jornada720_timer_ops **)(substream)->runtime->private_data)
-
 
 struct jornada720_model {
 	const char *name;
@@ -65,6 +49,8 @@ struct snd_jornada720 {
 	//HW pointers
 	struct uda1344* pchip_uda1344;
 	struct sa1111_dev * pdev_sa1111;
+	// The PCM substream we're playing
+	struct snd_pcm_substream *substream;
 };
 
 #endif

@@ -50,10 +50,15 @@ struct sa1111 {
 #define FROM_SA1111_IRQ(irq, sadev) \
 	(irq - get_sa1111_base_drv(sadev)->irq_base)
 
+/* SA1111 SAC Audio initilization */
+extern void         sa1111_audio_init(struct sa1111_dev *devptr);
+
 /* SA1111 SAC Register write */
 extern void         sa1111_sac_writereg(struct sa1111_dev *devptr, unsigned int val, u32 reg);
+
 /* SA1111 SAC Register read */
 extern unsigned int sa1111_sac_readreg(struct sa1111_dev *devptr, u32 reg);
+
 /* SA1111 SAC send byte via L3 bus */
 extern void 		sa1111_l3_send_byte(struct sa1111_dev *devptr, unsigned char addr, unsigned char dat);
 

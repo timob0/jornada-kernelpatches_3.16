@@ -35,11 +35,9 @@
 #include <asm/mach-types.h>
 #include <asm/hardware/sa1111.h>
 
+#include "jornada720-common.h"
 #include "jornada720-sac.h"
 #include "jornada720-uda1344.h"
-
-#undef DEBUG
-// #define DEBUG
 
 static DEFINE_SPINLOCK(snd_jornada720_sa1111_uda1344_lock);
 
