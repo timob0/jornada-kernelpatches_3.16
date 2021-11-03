@@ -116,9 +116,15 @@ static struct snd_pcm_hardware jornada720_pcm_hardware = {
 	.fifo_size =		0,
 };
 
+/*
+ *  PCM Stuff
+ */
+
+// PCM DMA datastructures
 static dma_buf_t playback_buffer;
 static dma_buf_t recording_buffer;
 
+/** Debugging aid */
 static void dbg_show_buffer(dma_buf_t* buffer) {
 	#ifdef DEBUG
 	printk(KERN_INFO ">>>>>>>>>>>>>dma_buf_t");
@@ -134,6 +140,7 @@ static void dbg_show_buffer(dma_buf_t* buffer) {
 	#endif
 }
 
+/** Called from the DMA interrupt to update the playback position */
 static void jornada720_pcm_callback(dma_buf_t *buf, int state) {
 	snd_pcm_period_elapsed(buf->snd_jornada720->substream);
 
@@ -179,7 +186,7 @@ static int jornada720_pcm_trigger(struct snd_pcm_substream *substream, int cmd) 
 	return err;
 }
 
-/* In reality calls timer_ops_ runtime private data */
+/* Prepare for PCM operation */
 static int jornada720_pcm_prepare(struct snd_pcm_substream *substream) {
 	DPRINTK(KERN_INFO "jornada720_pcm_prepare\n");
 	struct snd_jornada720 *jornada720 = snd_pcm_substream_chip(substream);
@@ -303,7 +310,7 @@ static int snd_card_jornada720_pcm(struct snd_jornada720 *jornada720, int device
 }
 
 /*
- * mixer interface
+ * Mixer interface
  */
 
 #define JORNADA720_VOLUME(xname, xindex, addr) \
@@ -315,46 +322,55 @@ static int snd_card_jornada720_pcm(struct snd_jornada720 *jornada720, int device
   .private_value = addr, \
   .tlv = { .p = db_scale_jornada720 } }
 
+/* Volume control configuration */
 static int snd_jornada720_volume_info(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_info *uinfo) {
 	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
-	uinfo->count = 2;
-	uinfo->value.integer.min = -50;
-	uinfo->value.integer.max = 100;
+	uinfo->count = 1;
+	uinfo->value.integer.min = -63;
+	uinfo->value.integer.max =   0;
 	return 0;
 }
- 
+
+/* Read volume information from device to userspace */
 static int snd_jornada720_volume_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol) {
 	struct snd_jornada720 *jornada720 = snd_kcontrol_chip(kcontrol);
 	int addr = kcontrol->private_value;
 
+	int left = uda1344_get_volume(jornada720->pdev_sa1111);
+	jornada720->mixer_volume[addr][0]=left;
+	
 	spin_lock_irq(&jornada720->mixer_lock);
 	ucontrol->value.integer.value[0] = jornada720->mixer_volume[addr][0];
-	ucontrol->value.integer.value[1] = jornada720->mixer_volume[addr][1];
+	// ucontrol->value.integer.value[1] = jornada720->mixer_volume[addr][1];
 	spin_unlock_irq(&jornada720->mixer_lock);
 	return 0;
 }
 
+/* Write volume information from userspace to device */
 static int snd_jornada720_volume_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol) {
 	struct snd_jornada720 *jornada720 = snd_kcontrol_chip(kcontrol);
 	int change, addr = kcontrol->private_value;
-	int left, right;
+	int left; // , right;
 
 	left = ucontrol->value.integer.value[0];
-	if (left < -50) left = -50;
-	if (left > 100) left = 100;
-	right = ucontrol->value.integer.value[1];
+	if (left < -63) left = -63;
+	if (left >   0) left =   0;
+/*	right = ucontrol->value.integer.value[1];
 	if (right < -50) right = -50;
-	if (right > 100) right = 100;
+	if (right > 100) right = 100; */
 	spin_lock_irq(&jornada720->mixer_lock);
-	change = jornada720->mixer_volume[addr][0] != left ||
-	         jornada720->mixer_volume[addr][1] != right;
+	change = jornada720->mixer_volume[addr][0] != left; /* ||
+	         jornada720->mixer_volume[addr][1] != right; */
 	jornada720->mixer_volume[addr][0] = left;
-	jornada720->mixer_volume[addr][1] = right;
+//	jornada720->mixer_volume[addr][1] = right;
 	spin_unlock_irq(&jornada720->mixer_lock);
+
+	if (change)	uda1344_set_volume(jornada720->pdev_sa1111, left);
+
 	return change;
 }
 
-static const DECLARE_TLV_DB_SCALE(db_scale_jornada720, -4500, 30, 0);
+static const DECLARE_TLV_DB_SCALE(db_scale_jornada720, -6300, 100, 0);
 
 #define JORNADA720_CAPSRC(xname, xindex, addr) \
 { .iface = SNDRV_CTL_ELEM_IFACE_MIXER, .name = xname, .index = xindex, \
@@ -363,7 +379,7 @@ static const DECLARE_TLV_DB_SCALE(db_scale_jornada720, -4500, 30, 0);
   .private_value = addr }
 
 #define snd_jornada720_capsrc_info	snd_ctl_boolean_stereo_info
- 
+
 static int snd_jornada720_capsrc_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol) {
 	struct snd_jornada720 *jornada720 = snd_kcontrol_chip(kcontrol);
 	int addr = kcontrol->private_value;
@@ -392,10 +408,10 @@ static int snd_jornada720_capsrc_put(struct snd_kcontrol *kcontrol, struct snd_c
 }
 
 static struct snd_kcontrol_new snd_jornada720_controls[] = {
-JORNADA720_VOLUME("Master Volume", 0, MIXER_ADDR_MASTER),
-JORNADA720_CAPSRC("Master Capture Switch", 0, MIXER_ADDR_MASTER),
-JORNADA720_VOLUME("Mic Volume", 0, MIXER_ADDR_MIC),
-JORNADA720_CAPSRC("Mic Capture Switch", 0, MIXER_ADDR_MIC),
+	JORNADA720_VOLUME("Master Volume", 0, MIXER_ADDR_MASTER),
+	JORNADA720_CAPSRC("Master Capture Switch", 0, MIXER_ADDR_MASTER),
+	JORNADA720_VOLUME("Mic Volume", 0, MIXER_ADDR_MIC),
+	JORNADA720_CAPSRC("Mic Capture Switch", 0, MIXER_ADDR_MIC),
 };
 
 static int snd_card_jornada720_new_mixer(struct snd_jornada720 *jornada720) {

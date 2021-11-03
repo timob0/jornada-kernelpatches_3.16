@@ -46,8 +46,7 @@ static struct uda1344 uda_chip = {
 	.volume = DEF_VOLUME | DEF_VOLUME << 8,
 	.bass   = 50 | 50 << 8,
 	.treble = 50 | 50 << 8,
-	.line   = 88 | 88 << 8,
-	.mic    = 88 | 88 << 8,
+
 	.samplerate = 22050,
 	.regs.stat0   = STAT0_SC_512FS | STAT0_IF_LSB16, // <- set i2s interface and 256f/s
 	.regs.data0_0 = DATA0_VOLUME(0),
@@ -64,6 +63,10 @@ struct uda1344* uda1344_instance(void) {
  * mirror it in SW since we can't read data from the chip. */ 
 static void uda1344_sync(struct sa1111_dev *devptr) {
 	struct uda1344 *uda = &uda_chip;
+
+	// Push the volume setting into the register
+	uda->regs.data0_0 = DATA0_VOLUME(uda->volume);
+
 	sa1111_l3_send_byte(devptr, UDA1344_STATUS, STAT0 | uda->regs.stat0);
 	sa1111_l3_send_byte(devptr, UDA1344_DATA,   DATA0 | uda->regs.data0_0);
 	sa1111_l3_send_byte(devptr, UDA1344_DATA,   DATA1 | uda->regs.data0_1);
@@ -75,11 +78,10 @@ static void uda1344_sync(struct sa1111_dev *devptr) {
 int uda1344_open(struct sa1111_dev *devptr) {
 	struct uda1344 *uda = &uda_chip;
 	uda->active = 1;
-	uda->volume = DEF_VOLUME | DEF_VOLUME << 8;
-	uda->bass   = 50 | 50 << 8;
-	uda->treble = 50 | 50 << 8;
-	uda->line   = 88 | 88 << 8;
-	uda->mic    = 88 | 88 << 8;
+	uda->volume = 0;
+	uda->bass   = 0;
+	uda->treble = 0;
+	uda->mute   = 0;
 	uda->samplerate = 22050;
 	uda->regs.stat0   = STAT0_SC_512FS | STAT0_IF_I2S;
 	uda->regs.data0_0 = DATA0_VOLUME(0);
@@ -163,4 +165,23 @@ void uda1344_set_samplerate(struct sa1111_dev *devptr, long rate) {
 
 	sa1111_set_audio_rate(devptr, rate);
 	uda1344_sync(devptr);
+}
+
+/* Set the volume for UDA1344 codec */
+void uda1344_set_volume(struct sa1111_dev *devptr, int volume) {
+	// we need to transmogrify the volume setting here
+	// so that -63 -> 1....1
+	// and       0 -> 0....0
+	// i.e. invert the volume, then convert to byte range
+	volume = volume * -1;
+	uda_chip.volume = volume & 0x3f;
+	uda1344_sync(devptr);
+}
+
+/* Get the volume from UDA1344 codec */
+int uda1344_get_volume(struct sa1111_dev *devptr) {
+	// transmogrify the volume setting
+	int volume = uda_chip.volume;
+	volume = volume * -1;
+	return volume;
 }

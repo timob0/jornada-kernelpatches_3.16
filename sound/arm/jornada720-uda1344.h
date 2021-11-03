@@ -82,8 +82,7 @@ struct uda1344 {
 	unsigned short	volume;
 	unsigned short	bass;
 	unsigned short	treble;
-	unsigned short	line;
-	unsigned short	mic;
+	unsigned short	mute;
 	int		        mod_cnt;
 	long			samplerate;
 
@@ -91,12 +90,19 @@ struct uda1344 {
 
 /* Get a reference to the uda_1344 chip singleton */
 extern struct uda1344* uda1344_instance(void);
+
 /* Open (initilize) the UDA 1344 codec */
 extern int uda1344_open(struct sa1111_dev *devptr);
 /* Close (shutdown) the UDA 1344 codec */
 extern void uda1344_close(struct sa1111_dev *devptr);
 /* Set the samplerate for the UDA 1344 codec */
 extern void uda1344_set_samplerate(struct sa1111_dev *devptr, long rate);
+
+/* Set the volume for UDA1344 codec */
+extern void uda1344_set_volume(struct sa1111_dev *devptr, int volume);
+/* Get the volume from UDA1344 codec */
+extern int uda1344_get_volume(struct sa1111_dev *devptr);
+
 
 // From top ifndef
 #endif
