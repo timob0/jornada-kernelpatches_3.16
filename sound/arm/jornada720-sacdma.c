@@ -28,6 +28,7 @@
 #include <linux/device.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/irq.h>
 #include <asm/irq.h>
 #include <asm/dma.h>
 #include <mach/jornada720.h>
@@ -38,6 +39,9 @@
 #include "jornada720-common.h"
 #include "jornada720-sacdma.h"
 #include "jornada720-sac.h"
+
+// SACDMA module lock
+static DEFINE_SPINLOCK(snd_jornada720_sa1111_sacdma_lock);
 
 /* DMA channel structure */
 typedef struct {
@@ -77,6 +81,9 @@ static sa1111_sac_dma_t dma_channels[SA1111_SAC_DMA_CHANNELS] = {
 
 /* Initialize dma_channels[ch] structure */
 static inline void init_dma_ch(unsigned int channel) {
+	// Make sure only one thred messes with the registers
+	spin_lock(&snd_jornada720_sa1111_sacdma_lock);
+
 	dma_channels[channel].direction = channel;
 	dma_channels[channel].in_use = 0;
 	dma_channels[channel].running = 0;
@@ -85,6 +92,9 @@ static inline void init_dma_ch(unsigned int channel) {
 	dma_channels[channel].irq_a = 0;
 	dma_channels[channel].irq_b = 0;
 	dma_channels[channel].dma_buffer = NULL;
+
+	// Make sure only one thred messes with the registers
+	spin_unlock(&snd_jornada720_sa1111_sacdma_lock);
 }
 
 /*
@@ -102,6 +112,9 @@ static void init_sa1111_sac_dma(struct sa1111_dev *devptr, int direction) {
 		printk(KERN_ERR "Invalid direction %d\n", direction);
 		return -EINVAL;
 	}
+
+	// Make sure only one thred messes with the registers
+	spin_lock(&snd_jornada720_sa1111_sacdma_lock);
 
 	if (direction==SA1111_SAC_XMT_CHANNEL) {
 		// TX
@@ -133,6 +146,11 @@ static void init_sa1111_sac_dma(struct sa1111_dev *devptr, int direction) {
 		val = val | (0x07 << 12);   // set RFTH to 7 (receive  fifo threshold)
 	}
 	sa1111_sac_writereg(devptr, val, SA1111_SACR0);
+
+	// Release lock
+	spin_lock(&snd_jornada720_sa1111_sacdma_lock);
+
+
 	DPRINTK(KERN_INFO "j720 sa1111 SAC initialized\n");
 }
 
@@ -142,7 +160,7 @@ static void init_sa1111_sac_dma(struct sa1111_dev *devptr, int direction) {
  * Note: this function will not wait, but only read the control register 
  *       and return immediately.
  */
-static int done_sa1111_sac_dma(struct sa1111_dev *devptr, int direction) {
+static int is_done_sa1111_sac_dma(struct sa1111_dev *devptr, int direction) {
 	unsigned int val;
 	unsigned int REG_CS = SA1111_SADTCS + (direction * DMA_REG_RX_OFS);  // Control register
 
@@ -156,7 +174,6 @@ static int done_sa1111_sac_dma(struct sa1111_dev *devptr, int direction) {
 		// Channel A
 		if (val & SAD_CS_DBDA) return 1;
 	}
-
 	return 0;
 }
 
@@ -177,6 +194,9 @@ static int start_sa1111_sac_dma(struct sa1111_dev *devptr, dma_addr_t dma_ptr, s
 		printk(KERN_ERR "Invalid direction %d\n", direction);
 		return -EINVAL;
 	}
+
+	// Make sure only one thred messes with the registers
+	spin_lock(&snd_jornada720_sa1111_sacdma_lock);
 
 	/* Read control register */
 	val = sa1111_sac_readreg(devptr, REG_CS);
@@ -226,6 +246,9 @@ static int start_sa1111_sac_dma(struct sa1111_dev *devptr, dma_addr_t dma_ptr, s
 		sa1111_sac_writereg(devptr, size, REG_COUNT);
 		sa1111_sac_writereg(devptr, val, REG_CS);
 	}
+	// Make sure only one thred messes with the registers
+	spin_unlock(&snd_jornada720_sa1111_sacdma_lock);
+
 	return 0;
 }
 
@@ -263,15 +286,13 @@ static irqreturn_t sa1111_dma_irqhandler(int irq, void *devptr)  {
 				// Play remaining buffer...
 				if (dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_ptr < (dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_start + dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->size)
 				) {
-					// Calculate remaining DMA block, could be less than a full one.				
-					size_t dma_size = dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->period_size;
-					//size_t d = dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_start + dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->size - dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_ptr;				
-					//if (d < dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->period_size) 
-					//	dma_size=d;
 					// Kick off next DMA and trigger callback
 					if (dma_channels[SA1111_SAC_XMT_CHANNEL].callback != NULL)
 						dma_channels[SA1111_SAC_XMT_CHANNEL].callback(dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer, STATE_RUNNING);
-					start_sa1111_sac_dma(devptr, dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_ptr, dma_size, dma_channels[SA1111_SAC_XMT_CHANNEL].direction);			
+
+					start_sa1111_sac_dma(devptr, dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_ptr, 
+					                             dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->period_size,
+												 dma_channels[SA1111_SAC_XMT_CHANNEL].direction);							
 				} 
 				// if end of buffer reached, replay from start if loop flag set
 				else {
@@ -281,11 +302,13 @@ static irqreturn_t sa1111_dma_irqhandler(int irq, void *devptr)  {
 					// Start next loop if loop flag set
 					if (dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->loop) {
 						dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_ptr = dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_start;
-
+						
 						// Kick off next DMA and trigger callback
 						if (dma_channels[SA1111_SAC_XMT_CHANNEL].callback != NULL)
 							dma_channels[SA1111_SAC_XMT_CHANNEL].callback(dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer, STATE_LOOPING);
-						start_sa1111_sac_dma(devptr, dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_ptr, dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->period_size, dma_channels[SA1111_SAC_XMT_CHANNEL].direction);
+						start_sa1111_sac_dma(devptr, dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_ptr, 
+						                             dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->period_size, 
+													 dma_channels[SA1111_SAC_XMT_CHANNEL].direction);						
 					}
 				}	
 			}
@@ -315,24 +338,37 @@ static int sa1111_dma_irqrequest(struct sa1111_dev *devptr, unsigned int directi
 		return -EINVAL;
 	}
 
-	irqa = TO_SA1111_IRQ(AUDXMTDMADONEA + direction, devptr);
-	err = request_irq(irqa, sa1111_dma_irqhandler, 0, SA1111_DRIVER_NAME(devptr), devptr);
-	if (err) {
-		printk(KERN_ERR "unable to request IRQ %d for DMA channel %d (A)\n", irqa, direction);
-		return err;
-	}
-	
-	irqb = TO_SA1111_IRQ(AUDXMTDMADONEB + direction, devptr);
-	err = request_irq(irqb, sa1111_dma_irqhandler, 0, SA1111_DRIVER_NAME(devptr), devptr);
-	if (err) {
-		printk(KERN_ERR "unable to request IRQ %d for DMA channel %d (B)\n", irqb, direction);
-		free_irq(irqa, sa1111_get_drvdata(devptr));
-		return err;
+	// Make sure only one thred messes with the registers
+	spin_lock(&snd_jornada720_sa1111_sacdma_lock);
+
+	// Prevent double allocation
+	if (dma_channels[direction].irq_a==0) {
+		irqa = TO_SA1111_IRQ(AUDXMTDMADONEA + direction, devptr);
+		err = request_irq(irqa, sa1111_dma_irqhandler, 0, SA1111_DRIVER_NAME(devptr), devptr);
+		if (err) {
+			printk(KERN_ERR "unable to request IRQ %d for DMA channel %d (A)\n", irqa, direction);
+			spin_unlock(&snd_jornada720_sa1111_sacdma_lock);
+			return err;
+		}
+		dma_channels[direction].irq_a = irqa;
 	}
 
-	// Store IRQ allocation and callback in channels
-	dma_channels[direction].irq_a = irqa;
-	dma_channels[direction].irq_b = irqb;
+	// Prevent double allocation
+	if (dma_channels[direction].irq_b==0) {
+		irqb = TO_SA1111_IRQ(AUDXMTDMADONEB + direction, devptr);
+		err = request_irq(irqb, sa1111_dma_irqhandler, 0, SA1111_DRIVER_NAME(devptr), devptr);
+		if (err) {
+			printk(KERN_ERR "unable to request IRQ %d for DMA channel %d (B)\n", irqb, direction);
+			spin_unlock(&snd_jornada720_sa1111_sacdma_lock);
+			free_irq(irqa, sa1111_get_drvdata(devptr));
+			return err;
+		}
+		dma_channels[direction].irq_b = irqb;
+	}
+
+	// Make sure only one thred messes with the registers
+	spin_unlock(&snd_jornada720_sa1111_sacdma_lock);
+
 	return 0;
 }
 
@@ -346,6 +382,9 @@ static void sa1111_dma_irqrelease(struct sa1111_dev *devptr, unsigned int direct
 		return -EINVAL;
 	}
 
+	// Make sure only one thred messes with the registers
+	spin_lock(&snd_jornada720_sa1111_sacdma_lock);
+
 	if (dma_channels[direction].irq_a!=0) {
 		free_irq(dma_channels[direction].irq_a, sa1111_get_drvdata(devptr));
 		dma_channels[direction].irq_a = 0;
@@ -355,41 +394,51 @@ static void sa1111_dma_irqrelease(struct sa1111_dev *devptr, unsigned int direct
 		free_irq(dma_channels[direction].irq_b, sa1111_get_drvdata(devptr));
 		dma_channels[direction].irq_b = 0;
 	}
-}
 
-static int sa1111_dma_init(struct sa1111_dev *devptr, int direction) {
-	int err;
-
-	/* Make sure direction is 0|1 */
-	if (direction<0 || direction>1) {
-		printk(KERN_ERR "Invalid direction %d\n", direction);
-		return -EINVAL;
-	}
-
-	// Initialize SAC Hardware
-	init_sa1111_sac_dma(devptr, direction);
-
-	init_dma_ch(direction);
-
-	// Request and init Interrupt Handlers
-	err = sa1111_dma_irqrequest(devptr, direction);
-	if (err < 0) {
-		printk(KERN_ERR "unable to request IRQs for Playback Channel\n");
-		return err;		
-	}
-	return 0;
-}
-
-static void sa1111_dma_shutdown(struct sa1111_dev *devptr, int direction) {
-	/* Make sure direction is 0|1 */
-	if (direction<0 || direction>1) {
-		printk(KERN_ERR "Invalid direction %d\n", direction);
-		return -EINVAL;
-	}
-	sa1111_dma_irqrelease(devptr, direction);
+	// Make sure only one thred messes with the registers
+	spin_unlock(&snd_jornada720_sa1111_sacdma_lock);
 }
 
 // PUBLIC Interface
+
+/* Allocate resources for PCM playback / recording */
+int sa1111_dma_alloc(struct sa1111_dev *devptr) {
+	int err;
+
+	// Initialize data structs (needs to happen here to not wipe out irq#s)
+	init_dma_ch(SA1111_SAC_XMT_CHANNEL);
+	init_dma_ch(SA1111_SAC_RCV_CHANNEL);
+
+	// Request and init Interrupt Handlers
+	err = sa1111_dma_irqrequest(devptr, SA1111_SAC_XMT_CHANNEL);
+	if (err < 0) {
+		printk(KERN_ERR "Unable to request IRQs for TX channel, error %d\n", err);
+		return err;
+	}
+
+	// Request and init Interrupt Handlers
+	err = sa1111_dma_irqrequest(devptr, SA1111_SAC_RCV_CHANNEL);
+	if (err < 0) {
+		printk(KERN_ERR "Unable to request IRQs for RX channel, error %d\n", err);
+		sa1111_dma_irqrelease(devptr, SA1111_SAC_XMT_CHANNEL);
+		return err;
+	}
+
+	// Initialize SAC Hardware
+	init_sa1111_sac_dma(devptr, SA1111_SAC_XMT_CHANNEL);
+	init_sa1111_sac_dma(devptr, SA1111_SAC_RCV_CHANNEL);
+
+	return 0;
+}
+
+/* Release resources for PCM playback / recording */
+int sa1111_dma_release(struct sa1111_dev *devptr) {
+	sa1111_dma_irqrelease(devptr, SA1111_SAC_XMT_CHANNEL);
+	sa1111_dma_irqrelease(devptr, SA1111_SAC_RCV_CHANNEL);
+
+	return 0;
+}
+
 int sa1111_dma_playback(struct sa1111_dev *devptr, dma_buf_t *dma_buffer, dma_block_callback callback) {
 	DPRINTK(KERN_INFO "sa1111_dma_playback\n");
 	int err;
@@ -414,8 +463,6 @@ int sa1111_dma_playback(struct sa1111_dev *devptr, dma_buf_t *dma_buffer, dma_bl
 		return -EINVAL;
 	}
 
-	sa1111_dma_init(devptr, SA1111_SAC_XMT_CHANNEL);
-
 	dma_channels[SA1111_SAC_XMT_CHANNEL].callback = callback;
 	dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer = dma_buffer;
 	dma_channels[SA1111_SAC_XMT_CHANNEL].running = 1;
@@ -425,7 +472,6 @@ int sa1111_dma_playback(struct sa1111_dev *devptr, dma_buf_t *dma_buffer, dma_bl
 				dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->period_size, 
 				SA1111_SAC_XMT_CHANNEL);
 	
-
 	if (err<0) {
 		printk(KERN_ERR "sa1111_dma_playback failed: start_sa1111_sac_dma() returned error.\n");
 		dma_channels[SA1111_SAC_XMT_CHANNEL].running=0;
@@ -439,11 +485,11 @@ int sa1111_dma_playback(struct sa1111_dev *devptr, dma_buf_t *dma_buffer, dma_bl
 int sa1111_dma_playstop(struct sa1111_dev *devptr, dma_buf_t *dma_buffer) {
 	stop_sa1111_sac_dma(devptr, SA1111_SAC_XMT_CHANNEL);
 	
+	// Wait to finish
 	int timeout=0;
-	while (!done_sa1111_sac_dma(devptr, SA1111_SAC_XMT_CHANNEL) && timeout<1000) {
+	while (!is_done_sa1111_sac_dma(devptr, SA1111_SAC_XMT_CHANNEL) && timeout<1000) {
 		udelay(10);
 	}
 
-	sa1111_dma_shutdown(devptr, SA1111_SAC_XMT_CHANNEL);
 	return 0;
 }

@@ -100,7 +100,8 @@ static DEFINE_SPINLOCK(snd_jornada720_snd_lock);
 static struct snd_pcm_hardware jornada720_pcm_hardware = {
 	.info =				(SNDRV_PCM_INFO_MMAP |
 				 		SNDRV_PCM_INFO_INTERLEAVED |				 		
-				 		SNDRV_PCM_INFO_MMAP_VALID),
+				 		SNDRV_PCM_INFO_MMAP_VALID |
+						SNDRV_PCM_INFO_RESUME),
 	.formats =			SNDRV_PCM_FMTBIT_S16_LE,
 	.rates =			SNDRV_PCM_RATE_22050,
 	.rate_min =			22050, // 8000, - clamped to 22khz for now
@@ -149,7 +150,6 @@ static void jornada720_pcm_callback(dma_buf_t *buf, int state) {
 }
 
 /** Start / Stop PCM playback */
-/* In reality calls timer_ops_ runtime private data */
 static int jornada720_pcm_trigger(struct snd_pcm_substream *substream, int cmd) {
 	struct snd_jornada720 *jornada720 = snd_pcm_substream_chip(substream);
 	int err=0;
@@ -195,7 +195,7 @@ static int jornada720_pcm_prepare(struct snd_pcm_substream *substream) {
 	playback_buffer.loop = 1;
 	dbg_show_buffer(&playback_buffer);
 
-	jornada720->substream = substream;      
+	jornada720->substream = substream;
 	return 0;
 }
 
@@ -225,19 +225,22 @@ static int jornada720_pcm_hw_free(struct snd_pcm_substream *substream) {
 }
 
 static int jornada720_pcm_open(struct snd_pcm_substream *substream) {
-	DPRINTK(KERN_INFO "jornada720_pcm_open\n");	
+	DPRINTK(KERN_INFO "jornada720_pcm_open\n");
+	int err=0;
 	struct snd_jornada720 *jornada720 = snd_pcm_substream_chip(substream);
 	struct snd_pcm_runtime *runtime = substream->runtime;
-	
+	// PCM Open code
 	runtime->hw = jornada720_pcm_hardware;
-
-	// Maybe here to setup irqs and stuff?
 
 	return 0;
 }
 
 static int jornada720_pcm_close(struct snd_pcm_substream *substream) {
 	DPRINTK(KERN_INFO "jornada720_pcm_close\n");
+	int err=0;
+	struct snd_jornada720 *jornada720 = snd_pcm_substream_chip(substream);
+	// PCM close code
+
 	return 0;
 }
 
@@ -252,12 +255,25 @@ static struct snd_pcm_ops jornada720_pcm_ops = {
 	.pointer =	jornada720_pcm_pointer,
 };
 
-/* Initialize the J720 pcm playback buffers */
+/* PCM Destructor */
+static void snd_card_jornada720_free(struct snd_jornada720 *jornada720, int device, int substreams) {
+	DPRINTK(KERN_INFO "snd_card_jornada720_free\n");
+	int err = 0;
+
+	err = sa1111_dma_release(jornada720->pdev_sa1111);
+	if (err<0) {
+		printk(KERN_ERR "snd_card_jornada720_free: sa1111_dma_release() failed.");	
+	}
+}
+
+/* PCM Constructor */
 static int snd_card_jornada720_pcm(struct snd_jornada720 *jornada720, int device, int substreams) {
+	DPRINTK(KERN_INFO "snd_card_jornada720_pcm\n");
+	
 	struct snd_pcm *pcm;
 	struct snd_pcm_ops *ops;
 	int err;
-	DPRINTK(KERN_INFO "snd_card_jornada720_pcm\n");
+
 	err = snd_pcm_new(jornada720->card, "Jornada720 PCM", device, substreams, substreams, &pcm);
 	if (err < 0) return err;
 
@@ -272,6 +288,17 @@ static int snd_card_jornada720_pcm(struct snd_jornada720 *jornada720, int device
 
 	// SNDRV_DMA_TYPE_DEV will call alloc_dma_coherent in the end
 	snd_pcm_lib_preallocate_pages_for_all(pcm, SNDRV_DMA_TYPE_DEV, jornada720->pdev_sa1111, 64*1024, 64*1024);
+
+	// Setup DMA Interrupts
+	err = sa1111_dma_alloc(jornada720->pdev_sa1111);
+	if (err<0) {
+		printk(KERN_ERR "snd_card_jornada720_pcm: sa1111_dma_alloc() failed.");
+		return err;
+	}
+
+	// Register destructor
+	pcm->private_free = snd_card_jornada720_free;
+
 	return 0;
 }
 
@@ -517,10 +544,10 @@ static void sa1111_play_chime(struct sa1111_dev *devptr) {
 
 	// Readout status register
 	val = sa1111_sac_readreg(devptr, SA1111_SASR0);
-	printk(KERN_INFO "j720 sa1111 SASR0: 0x%lxh\n", val);
+	DPRINTK(KERN_INFO "j720 sa1111 SASR0: 0x%lxh\n", val);
 
 	val = (val >> 8) & 0x0f;
-	printk(KERN_INFO "j720 sa1111 Tx FIFO level: %d\n", val);
+	DPRINTK(KERN_INFO "j720 sa1111 Tx FIFO level: %d\n", val);
 
 	unsigned int i=0;
 	unsigned int sample;

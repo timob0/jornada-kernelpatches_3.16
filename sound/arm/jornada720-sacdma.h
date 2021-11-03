@@ -14,9 +14,6 @@
 #define SA1111_SAC_XMT_CHANNEL  0
 #define SA1111_SAC_RCV_CHANNEL  1
 
-#define DMA_DIR_OUT 0
-#define DMA_DIR_IN  1
-
 #define DMA_REG_RX_OFS 0x14
 #define DMA_CH_A   0x00
 #define DMA_CH_B   0x08
@@ -43,6 +40,12 @@ typedef struct dma_buf_s {
 
 /* function to call when DMA_BLOCK_SIZE portion of dma_buffer is transferred */
 typedef void (*dma_block_callback)(dma_buf_t *dma_buffer, int state);
+
+/* Allocate resources for PCM playback / recording */
+extern  int sa1111_dma_alloc(struct sa1111_dev *devptr);
+
+/* Release resources for PCM playback / recording */
+extern  int sa1111_dma_release(struct sa1111_dev *devptr);
 
 /* Playback the data from dma_ptr with size bytes on the sa1111 device and call the callback function each DMA_BLOCK_SIZE bytes */
 extern  int sa1111_dma_playback(struct sa1111_dev *devptr, dma_buf_t *dma_buffer, dma_block_callback callback);
