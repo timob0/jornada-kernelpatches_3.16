@@ -14,16 +14,27 @@
 
 #include <asm/hardware/sa1111.h>
 
-// UDA134x stuff
-#define UDA1344_NAME "uda1344"
-#define DEF_VOLUME	65
+#define UDA1344_MAX_VOLUME 0
+#define UDA1344_MIN_VOLUME -63
 
-#define UDA1344_BUFFER_MAX 16380
-#define UDA1344_FORMATS SNDRV_PCM_FMTBIT_S16_LE
-#define UDA1344_CHANNELS_MIN 2
-#define UDA1344_CHANNELS_MAX 2
-#define UDA1344_PERIODS_MIN 2
-#define UDA1344_PERIODS_MAX 255
+#define UDA1344_MAX_BASS 15
+#define UDA1344_MIN_BASS 0
+
+#define UDA1344_MAX_TREBLE 3
+#define UDA1344_MIN_TREBLE 0
+
+#define UDA1344_MIN_DEEMP 0
+#define UDA1344_MAX_DEEMP 3
+
+#define UDA1344_MUTE_OFF 0
+#define UDA1344_MUTE_ON  1
+
+#define UDA1344_DCFILT_OFF 0
+#define UDA1344_DCFILT_ON  1
+
+#define UDA1344_DSP_FLAT 0
+#define UDA1344_DSP_MIN  1
+#define UDA1344_DSP_MAX  3
 
 /* UDA134x L3 address and command types */
 #define UDA1344_L3ADDR		0x05
@@ -76,6 +87,7 @@ struct uda1344_regs {
 #define DATA3_POWER_ON		(3 << 0)
 };
 
+
 struct uda1344 {
 	struct uda1344_regs regs;
 	int		        active;
@@ -83,9 +95,15 @@ struct uda1344 {
 	unsigned short	bass;
 	unsigned short	treble;
 	unsigned short	mute;
-	int		        mod_cnt;
+	unsigned short	deemp_mode;
+	unsigned short	dsp_mode;
 	long			samplerate;
-
+	unsigned short  dirty_flags;
+#define UDA_STATUS_DIRTY       (1 << 0)	
+#define UDA_VOLUME_DIRTY       (1 << 1)
+#define UDA_BASS_TREBLE_DIRTY  (1 << 2)
+#define UDA_FILTERS_MUTE_DIRTY (1 << 3)
+#define UDA_POWER_DIRTY        (1 << 4)
 };
 
 /* Get a reference to the uda_1344 chip singleton */
@@ -95,14 +113,25 @@ extern struct uda1344* uda1344_instance(void);
 extern int uda1344_open(struct sa1111_dev *devptr);
 /* Close (shutdown) the UDA 1344 codec */
 extern void uda1344_close(struct sa1111_dev *devptr);
+
 /* Set the samplerate for the UDA 1344 codec */
 extern void uda1344_set_samplerate(struct sa1111_dev *devptr, long rate);
 
-/* Set the volume for UDA1344 codec */
+/* Set the volume for UDA1344 codec (range -63 ... 0) */
 extern void uda1344_set_volume(struct sa1111_dev *devptr, int volume);
-/* Get the volume from UDA1344 codec */
 extern int uda1344_get_volume(struct sa1111_dev *devptr);
 
+/* Set the mute for UDA1344 codec (1=mute, 0=unmute) */
+extern void uda1344_set_mute(struct sa1111_dev *devptr, int mute);
+extern int uda1344_get_mute(struct sa1111_dev *devptr);
+
+/* Set the bass for UDA1344 codec (0 ... 15) */
+extern void uda1344_set_bass(struct sa1111_dev *devptr, int treble);
+extern int uda1344_get_bass(struct sa1111_dev *devptr);
+
+/* Set the treble for UDA1344 codec  (0..3) */
+extern void uda1344_set_treble(struct sa1111_dev *devptr, int treble);
+extern int uda1344_get_treble(struct sa1111_dev *devptr);
 
 // From top ifndef
 #endif

@@ -44,7 +44,7 @@ struct snd_jornada720 {
 	struct snd_pcm *pcm;
 	struct snd_pcm_hardware pcm_hw;
 	spinlock_t mixer_lock;
-	int mixer_volume[MIXER_ADDR_LAST+1][2];
+	int mixer_volume[MIXER_ADDR_LAST+1][1];
 	int capture_source[MIXER_ADDR_LAST+1][2];
 	//HW pointers
 	struct uda1344* pchip_uda1344;

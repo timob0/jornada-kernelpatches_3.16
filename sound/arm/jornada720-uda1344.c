@@ -41,68 +41,79 @@
 
 static DEFINE_SPINLOCK(snd_jornada720_sa1111_uda1344_lock);
 
-// The UDA1344 chip instance, initialized with poweron defaults
-static struct uda1344 uda_chip = {
-	.volume = DEF_VOLUME | DEF_VOLUME << 8,
-	.bass   = 50 | 50 << 8,
-	.treble = 50 | 50 << 8,
-
-	.samplerate = 22050,
-	.regs.stat0   = STAT0_SC_512FS | STAT0_IF_LSB16, // <- set i2s interface and 256f/s
-	.regs.data0_0 = DATA0_VOLUME(0),
-	.regs.data0_1 = DATA1_BASS(0) | DATA1_TREBLE(0),
-	.regs.data0_2 = DATA2_DEEMP_NONE | DATA2_FILTER_FLAT,
-	.regs.data0_3 = DATA3_POWER_ON,
-};
+// The UDA1344 chip instance
+static struct uda1344 uda_chip;
 
 /* Return a reference to the chip instance */
 struct uda1344* uda1344_instance(void) {
 	return &uda_chip;
 }
+
 /* Synchronize registers of the uda_chip instance with the hardware. We need to
  * mirror it in SW since we can't read data from the chip. */ 
 static void uda1344_sync(struct sa1111_dev *devptr) {
-	struct uda1344 *uda = &uda_chip;
-
 	// Push the volume setting into the register
-	uda->regs.data0_0 = DATA0_VOLUME(uda->volume);
+	
+	if (uda_chip.dirty_flags & UDA_STATUS_DIRTY) {
+		sa1111_l3_send_byte(devptr, UDA1344_STATUS, STAT0 | uda_chip.regs.stat0);
+	}
 
-	sa1111_l3_send_byte(devptr, UDA1344_STATUS, STAT0 | uda->regs.stat0);
-	sa1111_l3_send_byte(devptr, UDA1344_DATA,   DATA0 | uda->regs.data0_0);
-	sa1111_l3_send_byte(devptr, UDA1344_DATA,   DATA1 | uda->regs.data0_1);
-	sa1111_l3_send_byte(devptr, UDA1344_DATA,   DATA2 | uda->regs.data0_2);
-	sa1111_l3_send_byte(devptr, UDA1344_DATA,   DATA3 | uda->regs.data0_3);
+	if (uda_chip.dirty_flags & UDA_VOLUME_DIRTY) {
+		uda_chip.regs.data0_0 = DATA0_VOLUME(uda_chip.volume);
+		sa1111_l3_send_byte(devptr, UDA1344_DATA,   DATA0 | uda_chip.regs.data0_0);
+	}
+
+	if (uda_chip.dirty_flags & UDA_BASS_TREBLE_DIRTY) {
+		uda_chip.regs.data0_1 = DATA1_BASS(uda_chip.bass) | DATA1_TREBLE(uda_chip.treble);
+		sa1111_l3_send_byte(devptr, UDA1344_DATA,   DATA1 | uda_chip.regs.data0_1);
+	}
+
+	if (uda_chip.dirty_flags & UDA_FILTERS_MUTE_DIRTY) {
+		uda_chip.regs.data0_2 = DATA2_DEEMP_NONE | DATA2_FILTER_MAX | (uda_chip.mute & 0x01);
+		sa1111_l3_send_byte(devptr, UDA1344_DATA,   DATA2 | uda_chip.regs.data0_2);
+	}
+
+	if (uda_chip.dirty_flags & UDA_POWER_DIRTY) {
+		sa1111_l3_send_byte(devptr, UDA1344_DATA,   DATA3 | uda_chip.regs.data0_3);
+	}
+	// Clear dirty flags
+	uda_chip.dirty_flags=0;
 }
 
 /* Initialize the 1344 with some sensible defaults and turn on power. */
 int uda1344_open(struct sa1111_dev *devptr) {
-	struct uda1344 *uda = &uda_chip;
-	uda->active = 1;
-	uda->volume = 0;
-	uda->bass   = 0;
-	uda->treble = 0;
-	uda->mute   = 0;
-	uda->samplerate = 22050;
-	uda->regs.stat0   = STAT0_SC_512FS | STAT0_IF_I2S;
-	uda->regs.data0_0 = DATA0_VOLUME(0);
-	uda->regs.data0_1 = DATA1_BASS(0) | DATA1_TREBLE(0);
-	uda->regs.data0_2 = DATA2_DEEMP_NONE | DATA2_FILTER_FLAT;
-	uda->regs.data0_3 = DATA3_POWER_ON;
+	uda_chip.active = 1;
+	uda_chip.volume = 0;
+	uda_chip.bass   = 0;
+	uda_chip.treble = 0;
+	uda_chip.mute   = 0;
+	uda_chip.deemp_mode = 0;
+	uda_chip.dsp_mode = 0;
+	uda_chip.samplerate = 22050;
+	uda_chip.dirty_flags = 0;
+	uda_chip.regs.stat0   = STAT0_SC_512FS | STAT0_IF_I2S;
+	uda_chip.regs.data0_0 = DATA0_VOLUME(0);
+	uda_chip.regs.data0_1 = DATA1_BASS(0) | DATA1_TREBLE(0);
+	uda_chip.regs.data0_2 = DATA2_DEEMP_NONE | DATA2_FILTER_MAX;
+	uda_chip.regs.data0_3 = DATA3_POWER_ON;
+
+	// Enforce full sync
+	uda_chip.dirty_flags = (UDA_STATUS_DIRTY | UDA_VOLUME_DIRTY | UDA_BASS_TREBLE_DIRTY | UDA_FILTERS_MUTE_DIRTY | UDA_POWER_DIRTY);
+
 	uda1344_sync(devptr);
 	return 0;
 }
 
 /* Close the UDA1344 device, in practice this means we deactivate the power */
 void uda1344_close(struct sa1111_dev *devptr) {
-	struct uda1344 *uda = &uda_chip;
-	uda->active = 0;
-	uda->regs.data0_3 = DATA3_POWER_OFF;
+	uda_chip.active = 0;
+	uda_chip.regs.data0_3 = DATA3_POWER_OFF;
+	uda_chip.dirty_flags = UDA_POWER_DIRTY;
 	uda1344_sync(devptr);
 }
 
 /* Setup the samplerate for both the UDA1344 and the SA1111 devices */
 void uda1344_set_samplerate(struct sa1111_dev *devptr, long rate) {
-	struct uda1344 *uda = &uda_chip;
 	int clk_div = 0;
 
 	/*
@@ -138,30 +149,31 @@ void uda1344_set_samplerate(struct sa1111_dev *devptr, long rate) {
 	else
 		rate = 8000;
 	
-	uda->samplerate = rate;
+	uda_chip.samplerate = rate;
 
 	/* Select the clock divisor */
-	uda->regs.stat0 &= ~(STAT0_SC_MASK);
+	uda_chip.regs.stat0 &= ~(STAT0_SC_MASK);
 	switch (rate) {
 	case 8000:
 	case 10985:
 	case 22050:
 	case 24000:
-		uda->regs.stat0 |= STAT0_SC_512FS;
+		uda_chip.regs.stat0 |= STAT0_SC_512FS;
 		break;
 	case 16000:
 	case 21970:
 	case 44100:
 	case 48000:
-		uda->regs.stat0 |= STAT0_SC_256FS;
+		uda_chip.regs.stat0 |= STAT0_SC_256FS;
 		break;
 	case 10666:
 	case 14647:
 	case 29400:
 	case 32000:
-		uda->regs.stat0 |= STAT0_SC_384FS;
+		uda_chip.regs.stat0 |= STAT0_SC_384FS;
 		break;
 	}
+	uda_chip.dirty_flags = UDA_STATUS_DIRTY;
 
 	sa1111_set_audio_rate(devptr, rate);
 	uda1344_sync(devptr);
@@ -175,6 +187,7 @@ void uda1344_set_volume(struct sa1111_dev *devptr, int volume) {
 	// i.e. invert the volume, then convert to byte range
 	volume = volume * -1;
 	uda_chip.volume = volume & 0x3f;
+	uda_chip.dirty_flags = UDA_VOLUME_DIRTY;
 	uda1344_sync(devptr);
 }
 
@@ -184,4 +197,38 @@ int uda1344_get_volume(struct sa1111_dev *devptr) {
 	int volume = uda_chip.volume;
 	volume = volume * -1;
 	return volume;
+}
+
+/* Set the mute for UDA1344 codec (1=mute, 0=unmute) */
+extern void uda1344_set_mute(struct sa1111_dev *devptr, int mute) {
+	// limit to range 0..15	
+	uda_chip.mute = mute & 0x01;
+	uda_chip.dirty_flags = UDA_FILTERS_MUTE_DIRTY;
+	uda1344_sync(devptr);
+}
+
+extern int uda1344_get_mute(struct sa1111_dev *devptr) {
+	return uda_chip.mute;
+}
+
+/* Set the bass for UDA1344 codec (0 ... 15) */
+void uda1344_set_bass(struct sa1111_dev *devptr, int bass) {
+	// limit to range 0..15	
+	uda_chip.bass = bass & 0x0f;
+	uda_chip.dirty_flags = UDA_BASS_TREBLE_DIRTY;
+	uda1344_sync(devptr);
+}
+int uda1344_get_bass(struct sa1111_dev *devptr) {
+	return uda_chip.bass;
+}
+
+/* Set the treble for UDA1344 codec  (0..3) */
+void uda1344_set_treble(struct sa1111_dev *devptr, int treble) {
+	// limit to range 0..3	
+	uda_chip.treble = treble & 0x03;
+	uda_chip.dirty_flags = UDA_BASS_TREBLE_DIRTY;
+	uda1344_sync(devptr);
+}
+int uda1344_get_treble(struct sa1111_dev *devptr) {
+	return uda_chip.treble;
 }

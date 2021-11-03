@@ -59,14 +59,6 @@ void 		   sa1111_l3_send_byte(struct sa1111_dev *devptr, unsigned char addr, uns
 	
 	// Make sure only one thread is in the critical section below.
 	spin_lock(&snd_jornada720_sa1111_sac_lock);
-	
-	sa1111_sac_writereg(devptr, 0, SA1111_L3_CAR);  // <- why is this needed? check datasheet
-	sa1111_sac_writereg(devptr, 0, SA1111_L3_CDR);  // <- why is this needed? check datasheet
-	mdelay(1);
-
-	SASCR = sa1111_sac_readreg(devptr, SA1111_SASCR);
-	SASCR = SASCR_DTS|SASCR_RDD;
-	sa1111_sac_writereg(devptr, SASCR, SA1111_SASCR);
 
 	sa1111_sac_writereg(devptr, addr,  SA1111_L3_CAR);
 	sa1111_sac_writereg(devptr, dat,   SA1111_L3_CDR);
@@ -76,10 +68,10 @@ void 		   sa1111_l3_send_byte(struct sa1111_dev *devptr, unsigned char addr, uns
 		i++;
 	}
 	if (((sa1111_sac_readreg(devptr, SA1111_SASR0) & SASR0_L3WD) == 0)) {
-		printk(KERN_ERR "Jornada 720 soundcard L3 timeout! Programming error: Make sure SA1111 L3 Clock and bus are enabled bedore using L3 bus.\n");
+		printk(KERN_ERR "Jornada 720 soundcard L3 timeout! Programming error: Make sure SA1111 L3 Clock and bus are enabled before using L3 bus.\n");
 	}
 	
-	SASCR = SASCR_DTS|SASCR_RDD;
+	SASCR = SASCR_DTS;
 	sa1111_sac_writereg(devptr, SASCR, SA1111_SASCR);
 	
 	// Give up the lock
@@ -124,7 +116,9 @@ void sa1111_audio_init(struct sa1111_dev *devptr) {
 	val = sa1111_sac_readreg(devptr, SA1111_SACR0);
 	val |= (SACR0_ENB | SACR0_RST);
 	sa1111_sac_writereg(devptr, val, SA1111_SACR0);
+
 	mdelay(5);
+
 	val = sa1111_sac_readreg(devptr, SA1111_SACR0);
 	val &= ~SACR0_RST;
 	sa1111_sac_writereg(devptr, val, SA1111_SACR0);
