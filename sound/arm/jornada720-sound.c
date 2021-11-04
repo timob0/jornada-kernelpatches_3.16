@@ -96,6 +96,7 @@ static DEFINE_SPINLOCK(snd_jornada720_snd_lock);
 
 /*
  * PCM interface
+ 
  */
 static struct snd_pcm_hardware jornada720_pcm_hardware = {
 	.info =				(SNDRV_PCM_INFO_MMAP |
@@ -103,9 +104,20 @@ static struct snd_pcm_hardware jornada720_pcm_hardware = {
 				 		SNDRV_PCM_INFO_MMAP_VALID |
 						SNDRV_PCM_INFO_RESUME),
 	.formats =			SNDRV_PCM_FMTBIT_S16_LE,
+#ifdef RATE_FIXED
 	.rates =			SNDRV_PCM_RATE_22050,
-	.rate_min =			22050, // 8000, - clamped to 22khz for now
+	.rate_min =			22050,
 	.rate_max =			22050,
+#else
+	.rates =			SNDRV_PCM_RATE_44100 | 
+ 						SNDRV_PCM_RATE_32000 | 
+ 						SNDRV_PCM_RATE_22050 |
+ 						SNDRV_PCM_RATE_16000 | 
+						SNDRV_PCM_RATE_11025 | 
+						SNDRV_PCM_RATE_8000,
+	.rate_min =			8000,
+	.rate_max =			44100,
+#endif
 	.channels_min =		2,
 	.channels_max =		2,
 	.buffer_bytes_max =	MAX_BUFFER_SIZE,
@@ -222,6 +234,12 @@ static snd_pcm_uframes_t jornada720_pcm_pointer(struct snd_pcm_substream *substr
 /* Allocate DMA memory pages */
 static int jornada720_pcm_hw_params(struct snd_pcm_substream *substream, struct snd_pcm_hw_params *hw_params) {
 	DPRINTK(KERN_INFO "jornada720_pcm_hw_params\n");
+	struct snd_jornada720 *jornada720 = snd_pcm_substream_chip(substream);
+
+	int samplerate = params_rate(hw_params);
+	DPRINTK(KERN_INFO "jornada720_pcm_hw_params set samplerate %d\n", samplerate);
+	uda1344_set_samplerate(jornada720->pdev_sa1111, samplerate);
+
 	return snd_pcm_lib_malloc_pages(substream, params_buffer_bytes(hw_params));
 }
 
@@ -238,7 +256,6 @@ static int jornada720_pcm_open(struct snd_pcm_substream *substream) {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	// PCM Open code
 	runtime->hw = jornada720_pcm_hardware;
-
 	return 0;
 }
 
@@ -322,7 +339,7 @@ static int snd_card_jornada720_pcm(struct snd_jornada720 *jornada720, int device
   .private_value = addr, \
   .tlv = { .p = db_scale_jornada720 } }
 
-/* Volume control configuration */
+/* ******************* Volume control configuration */
 static int snd_jornada720_volume_info(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_info *uinfo) {
 	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
 	uinfo->count = 1;
@@ -330,7 +347,6 @@ static int snd_jornada720_volume_info(struct snd_kcontrol *kcontrol, struct snd_
 	uinfo->value.integer.max =   0;
 	return 0;
 }
-
 /* Read volume information from device to userspace */
 static int snd_jornada720_volume_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol) {
 	struct snd_jornada720 *jornada720 = snd_kcontrol_chip(kcontrol);
@@ -344,7 +360,6 @@ static int snd_jornada720_volume_get(struct snd_kcontrol *kcontrol, struct snd_c
 	spin_unlock_irq(&jornada720->mixer_lock);
 	return 0;
 }
-
 /* Write volume information from userspace to device */
 static int snd_jornada720_volume_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol) {
 	struct snd_jornada720 *jornada720 = snd_kcontrol_chip(kcontrol);
@@ -374,7 +389,7 @@ static const DECLARE_TLV_DB_SCALE(db_scale_jornada720, -6300, 100, 0);
   .get = snd_jornada720_mute_get, .put = snd_jornada720_mute_put, \
   .private_value = addr }
 
-/* Mute control configuration */
+/* ******************* Mute control configuration */
 static int snd_jornada720_mute_info(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_info *uinfo) {
 	uinfo->type = SNDRV_CTL_ELEM_TYPE_BOOLEAN;
 	uinfo->count = 1;
@@ -382,7 +397,6 @@ static int snd_jornada720_mute_info(struct snd_kcontrol *kcontrol, struct snd_ct
 	uinfo->value.integer.max = 1;
 	return 0;
 }
-
 /* Read volume information from device to userspace */
 static int snd_jornada720_mute_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol) {
 	struct snd_jornada720 *jornada720 = snd_kcontrol_chip(kcontrol);
@@ -394,7 +408,6 @@ static int snd_jornada720_mute_get(struct snd_kcontrol *kcontrol, struct snd_ctl
 	spin_unlock_irq(&jornada720->mixer_lock);
 	return 0;
 }
-
 /* Write volume information from userspace to device */
 static int snd_jornada720_mute_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol) {
 	struct snd_jornada720 *jornada720 = snd_kcontrol_chip(kcontrol);
@@ -420,7 +433,7 @@ static int snd_jornada720_mute_put(struct snd_kcontrol *kcontrol, struct snd_ctl
   .get = snd_jornada720_treble_get, .put = snd_jornada720_treble_put, \
   .private_value = addr }
 
- // Treble control configuration
+ // ******************* Treble control configuration
 static int snd_jornada720_treble_info(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_info *uinfo) {
 	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
 	uinfo->count = 1;
@@ -428,7 +441,6 @@ static int snd_jornada720_treble_info(struct snd_kcontrol *kcontrol, struct snd_
 	uinfo->value.integer.max = UDA1344_MAX_TREBLE;
 	return 0;
 }
-
 // Read Treble information from device to userspace 
 static int snd_jornada720_treble_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol) {
 	struct snd_jornada720 *jornada720 = snd_kcontrol_chip(kcontrol);
@@ -440,7 +452,6 @@ static int snd_jornada720_treble_get(struct snd_kcontrol *kcontrol, struct snd_c
 	spin_unlock_irq(&jornada720->mixer_lock);
 	return 0;
 }
-
 // Write Treble information from userspace to device
 static int snd_jornada720_treble_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol) {
 	struct snd_jornada720 *jornada720 = snd_kcontrol_chip(kcontrol);
@@ -467,7 +478,7 @@ static int snd_jornada720_treble_put(struct snd_kcontrol *kcontrol, struct snd_c
   .get = snd_jornada720_bass_get, .put = snd_jornada720_bass_put, \
   .private_value = addr }
  
- // Bass control configuration
+ // ******************* Bass control configuration
 static int snd_jornada720_bass_info(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_info *uinfo) {
 	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
 	uinfo->count = 1;
@@ -475,7 +486,6 @@ static int snd_jornada720_bass_info(struct snd_kcontrol *kcontrol, struct snd_ct
 	uinfo->value.integer.max = UDA1344_MAX_BASS;
 	return 0;
 }
-
 // Read volume information from device to userspace
 static int snd_jornada720_bass_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol) {
 	struct snd_jornada720 *jornada720 = snd_kcontrol_chip(kcontrol);
@@ -487,7 +497,6 @@ static int snd_jornada720_bass_get(struct snd_kcontrol *kcontrol, struct snd_ctl
 	spin_unlock_irq(&jornada720->mixer_lock);
 	return 0;
 }
-
 // Write volume information from userspace to device
 static int snd_jornada720_bass_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol) {
 	struct snd_jornada720 *jornada720 = snd_kcontrol_chip(kcontrol);
@@ -495,8 +504,8 @@ static int snd_jornada720_bass_put(struct snd_kcontrol *kcontrol, struct snd_ctl
 	int bass;
 
 	bass = ucontrol->value.integer.value[0];
-	if (bass < UDA1344_MIN_TREBLE) bass = UDA1344_MIN_TREBLE;
-	if (bass > UDA1344_MAX_TREBLE) bass = UDA1344_MAX_TREBLE;
+	if (bass < UDA1344_MIN_BASS) bass = UDA1344_MIN_BASS;
+	if (bass > UDA1344_MAX_BASS) bass = UDA1344_MAX_BASS;
 
 	spin_lock_irq(&jornada720->mixer_lock);
 	change = uda1344_get_bass(jornada720->pdev_sa1111) != bass;
@@ -506,11 +515,104 @@ static int snd_jornada720_bass_put(struct snd_kcontrol *kcontrol, struct snd_ctl
 	return change;
 }
 
+#define JORNADA720_DSP(xname, xindex, addr) \
+{ .iface = SNDRV_CTL_ELEM_IFACE_MIXER, \
+  .access = SNDRV_CTL_ELEM_ACCESS_READWRITE, \
+  .name = xname, .index = xindex, \
+  .info = snd_jornada720_dsp_info, \
+  .get = snd_jornada720_dsp_get, .put = snd_jornada720_dsp_put, \
+  .private_value = addr }
+ 
+// ******************* DSP Mode control configuration
+static int snd_jornada720_dsp_info(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_info *uinfo) {
+	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
+	uinfo->count = 1;
+	uinfo->value.integer.min = UDA1344_DSP_FLAT;
+	uinfo->value.integer.max = UDA1344_DSP_MAX;
+	return 0;
+}
+// Read volume information from device to userspace
+static int snd_jornada720_dsp_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol) {
+	struct snd_jornada720 *jornada720 = snd_kcontrol_chip(kcontrol);
+	int addr = kcontrol->private_value;
+
+	spin_lock_irq(&jornada720->mixer_lock);
+	int bass = uda1344_get_dsp(jornada720->pdev_sa1111);
+	ucontrol->value.integer.value[0] = bass;
+	spin_unlock_irq(&jornada720->mixer_lock);
+	return 0;
+}
+// Write volume information from userspace to device
+static int snd_jornada720_dsp_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol) {
+	struct snd_jornada720 *jornada720 = snd_kcontrol_chip(kcontrol);
+	int change, addr = kcontrol->private_value;
+	int bass;
+
+	bass = ucontrol->value.integer.value[0];
+	if (bass < UDA1344_DSP_FLAT) bass = UDA1344_DSP_FLAT;
+	if (bass > UDA1344_DSP_MAX) bass = UDA1344_DSP_MAX;
+
+	spin_lock_irq(&jornada720->mixer_lock);
+	change = uda1344_get_dsp(jornada720->pdev_sa1111) != bass;
+	spin_unlock_irq(&jornada720->mixer_lock);
+
+	if (change)	uda1344_set_dsp(jornada720->pdev_sa1111, bass);;
+	return change;
+}
+
+#define JORNADA720_DEEMP(xname, xindex, addr) \
+{ .iface = SNDRV_CTL_ELEM_IFACE_MIXER, \
+  .access = SNDRV_CTL_ELEM_ACCESS_READWRITE, \
+  .name = xname, .index = xindex, \
+  .info = snd_jornada720_deemp_info, \
+  .get = snd_jornada720_deemp_get, .put = snd_jornada720_deemp_put, \
+  .private_value = addr }
+ 
+// ******************* Demphasis Mode control configuration
+static int snd_jornada720_deemp_info(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_info *uinfo) {
+	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
+	uinfo->count = 1;
+	uinfo->value.integer.min = UDA1344_MIN_DEEMP;
+	uinfo->value.integer.max = UDA1344_MAX_DEEMP;
+	return 0;
+}
+// Read volume information from device to userspace
+static int snd_jornada720_deemp_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol) {
+	struct snd_jornada720 *jornada720 = snd_kcontrol_chip(kcontrol);
+	int addr = kcontrol->private_value;
+
+	spin_lock_irq(&jornada720->mixer_lock);
+	int bass = uda1344_get_deemp(jornada720->pdev_sa1111);
+	ucontrol->value.integer.value[0] = bass;
+	spin_unlock_irq(&jornada720->mixer_lock);
+	return 0;
+}
+// Write volume information from userspace to device
+static int snd_jornada720_deemp_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol) {
+	struct snd_jornada720 *jornada720 = snd_kcontrol_chip(kcontrol);
+	int change, addr = kcontrol->private_value;
+	int bass;
+
+	bass = ucontrol->value.integer.value[0];
+	if (bass < UDA1344_MIN_DEEMP) bass = UDA1344_MIN_DEEMP;
+	if (bass > UDA1344_MAX_DEEMP) bass = UDA1344_MAX_DEEMP;
+
+	spin_lock_irq(&jornada720->mixer_lock);
+	change = uda1344_get_deemp(jornada720->pdev_sa1111) != bass;
+	spin_unlock_irq(&jornada720->mixer_lock);
+
+	if (change)	uda1344_set_deemp(jornada720->pdev_sa1111, bass);;
+	return change;
+}
+
+// Define the Mixer panel
 static struct snd_kcontrol_new snd_jornada720_controls[] = {
 	JORNADA720_VOLUME("Master Volume", 0, MIXER_ADDR_MASTER),
 	JORNADA720_MUTE("Master Volume Switch", 1, MIXER_ADDR_MASTER),
 	JORNADA720_TREBLE("Tone Control - Treble", 2, MIXER_ADDR_MASTER),
 	JORNADA720_BASS("Tone Control - Bass", 3, MIXER_ADDR_MASTER),
+	JORNADA720_DSP("Tone Control - Switch", 4, MIXER_ADDR_MASTER),
+	JORNADA720_DEEMP("Tone Control - De-Emphasis", 5, MIXER_ADDR_MASTER),
 };
 
 static int snd_card_jornada720_new_mixer(struct snd_jornada720 *jornada720) {

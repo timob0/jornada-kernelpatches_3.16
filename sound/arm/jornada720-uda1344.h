@@ -133,5 +133,13 @@ extern int uda1344_get_bass(struct sa1111_dev *devptr);
 extern void uda1344_set_treble(struct sa1111_dev *devptr, int treble);
 extern int uda1344_get_treble(struct sa1111_dev *devptr);
 
+/* Set the dsp level for UDA1344 codec  (0..3) */
+extern void uda1344_set_dsp(struct sa1111_dev *devptr, int dsp);
+extern int uda1344_get_dsp(struct sa1111_dev *devptr);
+
+/* Set the deemphasis level for UDA1344 codec  (0..3) */
+extern void uda1344_set_deemp(struct sa1111_dev *devptr, int de_emp);
+extern int uda1344_get_deemp(struct sa1111_dev *devptr);
+
 // From top ifndef
 #endif

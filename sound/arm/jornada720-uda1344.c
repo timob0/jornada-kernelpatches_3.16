@@ -55,6 +55,7 @@ static void uda1344_sync(struct sa1111_dev *devptr) {
 	// Push the volume setting into the register
 	
 	if (uda_chip.dirty_flags & UDA_STATUS_DIRTY) {
+		DPRINTK("Updating STAT0 with 0x%xh\n", uda_chip.regs.stat0);
 		sa1111_l3_send_byte(devptr, UDA1344_STATUS, STAT0 | uda_chip.regs.stat0);
 	}
 
@@ -69,7 +70,7 @@ static void uda1344_sync(struct sa1111_dev *devptr) {
 	}
 
 	if (uda_chip.dirty_flags & UDA_FILTERS_MUTE_DIRTY) {
-		uda_chip.regs.data0_2 = DATA2_DEEMP_NONE | DATA2_FILTER_MAX | (uda_chip.mute & 0x01);
+		uda_chip.regs.data0_2 = ((uda_chip.deemp_mode & 0x03) << 3) | ((uda_chip.mute & 0x01) << 2) | (uda_chip.dsp_mode & 0x03);
 		sa1111_l3_send_byte(devptr, UDA1344_DATA,   DATA2 | uda_chip.regs.data0_2);
 	}
 
@@ -114,68 +115,99 @@ void uda1344_close(struct sa1111_dev *devptr) {
 
 /* Setup the samplerate for both the UDA1344 and the SA1111 devices */
 void uda1344_set_samplerate(struct sa1111_dev *devptr, long rate) {
-	int clk_div = 0;
+	struct sa1111 *sachip = get_sa1111_base_drv(devptr);
+	unsigned int clk_div;
+	unsigned long flags;
+	unsigned int val;
 
 	/*
-	 * We have the following clock sources:
-	 * 4.096 MHz, 5.6245 MHz, 11.2896 MHz, 12.288 MHz
-	 * Those can be divided either by 256, 384 or 512.
-	 * This makes up 12 combinations for the following samplerates...
-	 * 
-	 * Note: not sure if this is real for Jornada 720 
+	 * Samplerates as per Table 7-6 from Intels SA1111 datasheet
 	 */
-	if (rate >= 48000)
-		rate = 48000;
-	else if (rate >= 44100)
+	if (rate >= 44100) {
 		rate = 44100;
-	else if (rate >= 32000)
+		clk_div = 12;
+	}
+	else if (rate >= 32000) {
 		rate = 32000;
-	else if (rate >= 29400)
-		rate = 29400;
-	else if (rate >= 24000)
-		rate = 24000;
-	else if (rate >= 22050)
+		clk_div = 18;
+	}
+	else if (rate >= 22050) {
 		rate = 22050;
-	else if (rate >= 21970)
-		rate = 21970;
-	else if (rate >= 16000)
+		clk_div = 25;
+	}
+	else if (rate >= 16000) {
 		rate = 16000;
-	else if (rate >= 14647)
-		rate = 14647;
-	else if (rate >= 10985)
-		rate = 10985;
-	else if (rate >= 10666)
-		rate = 10666;
-	else
+		clk_div = 35;
+	}
+	else if (rate >= 11025) {
+		rate = 11025;
+		clk_div = 51;
+	}
+	else if (rate >= 8000) {
 		rate = 8000;
-	
+		clk_div = 70;
+	}
+	else {
+		rate = 8000;
+		clk_div = 70;
+	}
 	uda_chip.samplerate = rate;
+	DPRINTK(KERN_INFO "j720 sa1111 PLL clock: %d\n", sa1111_pll_clock(devptr));
+	DPRINTK(KERN_INFO "j720 sa1111 clock divider: %d\n", clk_div);
 
-	/* Select the clock divisor */
+	// deselect AC Link
+	sa1111_select_audio_mode(devptr, SA1111_AUDIO_ACLINK);
+	mdelay(5);
+	sa1111_select_audio_mode(devptr, SA1111_AUDIO_I2S);
+
+	/* Activate and reset the Serial Audio Controller */
+	spin_lock_irqsave(&sachip->lock, flags);
+	val = sa1111_sac_readreg(devptr, SA1111_SACR0);
+	val |= (SACR0_ENB | SACR0_RST);
+	sa1111_sac_writereg(devptr, val, SA1111_SACR0);
+	mdelay(5);
+	val = sa1111_sac_readreg(devptr, SA1111_SACR0);
+	val &= ~SACR0_RST;
+	sa1111_sac_writereg(devptr, val, SA1111_SACR0);
+
+	// Turn I2S/L3 clocks off
+	val = sa1111_readl(sachip->base + SA1111_SKPCR);
+	val &= ~(SKPCR_I2SCLKEN | SKPCR_L3CLKEN);
+	sa1111_writel(val, sachip->base + SA1111_SKPCR);
+	
+	// Set new sampling rate
+	sa1111_writel(clk_div - 1, sachip->base + SA1111_SKAUD);
+
+	// Turn clocks on
+	val = sa1111_readl(sachip->base + SA1111_SKPCR);
+	val|= (SKPCR_I2SCLKEN | SKPCR_L3CLKEN);
+	sa1111_writel(val, sachip->base + SA1111_SKPCR);
+
+	// L3 Enable
+	sa1111_sac_writereg(devptr, SACR1_L3EN, SA1111_SACR1);
+	spin_unlock_irqrestore(&sachip->lock, flags);
+
+	val = sa1111_readl(sachip->base + SA1111_SKAUD);
+	DPRINTK(KERN_INFO "j720 sa1111 SA1111_SKAUD: %d\n", val);
+
+	/* Set the UDA1344 sysclock divider */
 	uda_chip.regs.stat0 &= ~(STAT0_SC_MASK);
 	switch (rate) {
 	case 8000:
-	case 10985:
-	case 22050:
-	case 24000:
-		uda_chip.regs.stat0 |= STAT0_SC_512FS;
+	case 11025:
+		uda_chip.regs.stat0 |= STAT0_SC_UNUSED;
 		break;
 	case 16000:
-	case 21970:
-	case 44100:
-	case 48000:
+	case 22050:
 		uda_chip.regs.stat0 |= STAT0_SC_256FS;
 		break;
-	case 10666:
-	case 14647:
-	case 29400:
 	case 32000:
-		uda_chip.regs.stat0 |= STAT0_SC_384FS;
+	case 44100:
+		uda_chip.regs.stat0 |= STAT0_SC_512FS;
 		break;
 	}
-	uda_chip.dirty_flags = UDA_STATUS_DIRTY;
 
-	sa1111_set_audio_rate(devptr, rate);
+	uda_chip.dirty_flags = UDA_STATUS_DIRTY;
 	uda1344_sync(devptr);
 }
 
@@ -231,4 +263,26 @@ void uda1344_set_treble(struct sa1111_dev *devptr, int treble) {
 }
 int uda1344_get_treble(struct sa1111_dev *devptr) {
 	return uda_chip.treble;
+}
+
+/* Set the dsp level for UDA1344 codec  (0..3) */
+void uda1344_set_dsp(struct sa1111_dev *devptr, int dsp) {
+	// limit to range 0..3	
+	uda_chip.dsp_mode = dsp & 0x03;
+	uda_chip.dirty_flags = UDA_FILTERS_MUTE_DIRTY;
+	uda1344_sync(devptr);
+}
+int uda1344_get_dsp(struct sa1111_dev *devptr){
+	return uda_chip.dsp_mode;
+}
+
+/* Set the deemphasis level for UDA1344 codec  (0..3) */
+void uda1344_set_deemp(struct sa1111_dev *devptr, int de_emp){
+	// limit to range 0..3	
+	uda_chip.deemp_mode = de_emp & 0x03;
+	uda_chip.dirty_flags = UDA_FILTERS_MUTE_DIRTY;
+	uda1344_sync(devptr);
+}
+int uda1344_get_deemp(struct sa1111_dev *devptr){
+	return uda_chip.deemp_mode;
 }

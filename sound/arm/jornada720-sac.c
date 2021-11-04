@@ -53,27 +53,61 @@ unsigned int sa1111_sac_readreg(struct sa1111_dev *devptr, u32 reg) {
 
 // Send bytes via SA1111-L3
 void 		   sa1111_l3_send_byte(struct sa1111_dev *devptr, unsigned char addr, unsigned char dat) {
-	int i=0;
+	int i;
 	unsigned int SASCR;
 	unsigned int SACR1;
 	
 	// Make sure only one thread is in the critical section below.
 	spin_lock(&snd_jornada720_sa1111_sac_lock);
 
+__retry:
+	i=0;
+
 	sa1111_sac_writereg(devptr, addr,  SA1111_L3_CAR);
 	sa1111_sac_writereg(devptr, dat,   SA1111_L3_CDR);
 
-	while (((sa1111_sac_readreg(devptr, SA1111_SASR0) & SASR0_L3WD) == 0) && (i < 1000)) {
-		mdelay(1); // one msec seems to long
+	// Wait for L3 to come back in 200ms
+	while (((sa1111_sac_readreg(devptr, SA1111_SASR0) & SASR0_L3WD) == 0) && (i < 200)) {
+		mdelay(1);
 		i++;
 	}
+	// If still not confirmed, restart L3 clock and retry
 	if (((sa1111_sac_readreg(devptr, SA1111_SASR0) & SASR0_L3WD) == 0)) {
-		printk(KERN_ERR "Jornada 720 soundcard L3 timeout! Programming error: Make sure SA1111 L3 Clock and bus are enabled before using L3 bus.\n");
+		printk(KERN_ERR "Jornada 720 soundcard L3 timeout! Restarting L3 clock.\n");
+		unsigned int val;
+		struct sa1111 *sachip = get_sa1111_base_drv(devptr);
+	
+		SASCR = SASCR_DTS;
+		sa1111_sac_writereg(devptr, SASCR, SA1111_SASCR);
+		sa1111_sac_writereg(devptr, 0x00,  SA1111_L3_CAR);
+		sa1111_sac_writereg(devptr, 0x00,  SA1111_L3_CDR);
+
+		// Disable and re-enable L3 and clock
+		val = sa1111_readl(sachip->base + SA1111_SKPCR);
+		val &= ~SKPCR_L3CLKEN;
+		sa1111_writel(val, sachip->base + SA1111_SKPCR);
+		mdelay(10);
+
+		sa1111_sac_writereg(devptr, 0x0, SA1111_SACR1);
+		mdelay(10);
+
+		sa1111_sac_writereg(devptr, SACR1_L3EN, SA1111_SACR1);
+		mdelay(10);
+
+		val = sa1111_readl(sachip->base + SA1111_SKPCR);
+		val |= SKPCR_L3CLKEN;
+		sa1111_writel(val, sachip->base + SA1111_SKPCR);
+		mdelay(10);
+
+		goto __retry;
 	}
 	
 	SASCR = SASCR_DTS;
 	sa1111_sac_writereg(devptr, SASCR, SA1111_SASCR);
 	
+	// Wait 20msec before next transfer (uda1344 L3 is limited to 64f/s)
+	mdelay(20);
+
 	// Give up the lock
 	spin_unlock(&snd_jornada720_sa1111_sac_lock);
 }
@@ -94,7 +128,7 @@ void sa1111_audio_init(struct sa1111_dev *devptr) {
 	// Make sure only one thread is in the critical section below.
 	spin_lock(&snd_jornada720_sa1111_sac_lock);
 	
-	PPSR &= ~(PPC_LDD3 | PPC_LDD4);
+	PPSR &= ~(PPC_LDD3 | PPC_LDD4); // 5/6 are not leds
 	PPDR |= PPC_LDD3 | PPC_LDD4;
 	PPSR |= PPC_LDD4; /* enable speaker */
 	PPSR |= PPC_LDD3; /* enable microphone */
@@ -124,11 +158,6 @@ void sa1111_audio_init(struct sa1111_dev *devptr) {
 	sa1111_sac_writereg(devptr, val, SA1111_SACR0);
 	DPRINTK(KERN_INFO "j720 sa1111 SAC reset and enabled\n");
 
-	/* For I2S, BIT_CLK is supplied internally. The "SA-1111
-	 * Specification Update" mentions that the BCKD bit should
-	 * be interpreted as "0 = output". Default clock divider
-	 * is 22.05kHz.
-	 */
 	sa1111_sac_writereg(devptr, SACR1_L3EN, SA1111_SACR1);
 	DPRINTK(KERN_INFO "j720 sa1111 L3 interface enabled\n");
 

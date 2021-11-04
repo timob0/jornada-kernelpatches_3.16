@@ -22,6 +22,9 @@
 // Debugging switch
 #undef DEBUG
 
+// Fixed samplerate
+#define RATE_FIXED
+
 // ********* Common constants **********
 // One DMA transfer is up to 4kb, 0x800 defined in sa1111.h, 1ffc = (1<<13)-1 ~& 0x03 (max as per intel datasheet)
 #define MIN_DMA_BLOCK_SIZE (0x0800)
