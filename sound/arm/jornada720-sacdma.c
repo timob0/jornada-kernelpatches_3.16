@@ -140,10 +140,10 @@ static void init_sa1111_sac_dma(struct sa1111_dev *devptr, int direction) {
 	val = sa1111_sac_readreg(devptr, SA1111_SACR0);
 	val = val & 0xFF; //Mask out bits 8-31
 	if (direction==SA1111_SAC_XMT_CHANNEL) {
-		val = val | (0x07 << 8);    // set TFTH to 7 (transmit fifo threshold)
+		val = val | (SAC_FIFO_TX_THRESHOLD << 8);    // set TFTH to 7 (transmit fifo threshold 7=intel default)
 	}
 	if  (direction==SA1111_SAC_RCV_CHANNEL) {
-		val = val | (0x07 << 12);   // set RFTH to 7 (receive  fifo threshold)
+		val = val | (SAC_FIFO_RX_THRESHOLD << 12);   // set RFTH to 7 (receive  fifo threshold 7=intel default)
 	}
 	sa1111_sac_writereg(devptr, val, SA1111_SACR0);
 

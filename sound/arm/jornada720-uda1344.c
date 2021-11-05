@@ -39,6 +39,8 @@
 #include "jornada720-sac.h"
 #include "jornada720-uda1344.h"
 
+#define AUDIO_CLK_BASE		561600
+
 static DEFINE_SPINLOCK(snd_jornada720_sa1111_uda1344_lock);
 
 // The UDA1344 chip instance
@@ -54,8 +56,7 @@ struct uda1344* uda1344_instance(void) {
 static void uda1344_sync(struct sa1111_dev *devptr) {
 	// Push the volume setting into the register
 	
-	if (uda_chip.dirty_flags & UDA_STATUS_DIRTY) {
-		DPRINTK("Updating STAT0 with 0x%xh\n", uda_chip.regs.stat0);
+	if (uda_chip.dirty_flags & UDA_STATUS_DIRTY) {		
 		sa1111_l3_send_byte(devptr, UDA1344_STATUS, STAT0 | uda_chip.regs.stat0);
 	}
 
@@ -124,91 +125,71 @@ void uda1344_set_samplerate(struct sa1111_dev *devptr, long rate) {
 	 * Samplerates as per Table 7-6 from Intels SA1111 datasheet
 	 */
 	if (rate >= 44100) {
-		rate = 44100;
-		clk_div = 12;
-	}
+		rate = 44100;		
+ 	}
 	else if (rate >= 32000) {
 		rate = 32000;
-		clk_div = 18;
 	}
 	else if (rate >= 22050) {
 		rate = 22050;
-		clk_div = 25;
 	}
 	else if (rate >= 16000) {
 		rate = 16000;
-		clk_div = 35;
 	}
 	else if (rate >= 11025) {
 		rate = 11025;
-		clk_div = 51;
 	}
 	else if (rate >= 8000) {
 		rate = 8000;
-		clk_div = 70;
 	}
 	else {
 		rate = 8000;
-		clk_div = 70;
 	}
 	uda_chip.samplerate = rate;
 	DPRINTK(KERN_INFO "j720 sa1111 PLL clock: %d\n", sa1111_pll_clock(devptr));
 	DPRINTK(KERN_INFO "j720 sa1111 clock divider: %d\n", clk_div);
 
-	// deselect AC Link
-	sa1111_select_audio_mode(devptr, SA1111_AUDIO_ACLINK);
-	mdelay(5);
-	sa1111_select_audio_mode(devptr, SA1111_AUDIO_I2S);
+	// Set the UDA1344 sysclock divider - turns out it is crucial to do this BEFORE
+	// reprogramming the SA1111 sysclock... 
+	uda_chip.regs.stat0 &= ~(STAT0_SC_MASK);
+	switch (rate) {
+		case 8000:
+		case 16000:
+		case 32000:
+			uda_chip.regs.stat0 = STAT0_SC_256FS | STAT0_IF_I2S;
+			break;
+			uda_chip.regs.stat0 = STAT0_SC_384FS | STAT0_IF_I2S;
+			break;
+		case 11025:
+		case 22050:
+		case 44100:
+			uda_chip.regs.stat0 = STAT0_SC_512FS | STAT0_IF_I2S;
+			break;
+	}
+	uda_chip.dirty_flags = UDA_STATUS_DIRTY;
+	uda1344_sync(devptr);
 
-	/* Activate and reset the Serial Audio Controller */
+	// Turn I2S clocks off
 	spin_lock_irqsave(&sachip->lock, flags);
-	val = sa1111_sac_readreg(devptr, SA1111_SACR0);
-	val |= (SACR0_ENB | SACR0_RST);
-	sa1111_sac_writereg(devptr, val, SA1111_SACR0);
-	mdelay(5);
-	val = sa1111_sac_readreg(devptr, SA1111_SACR0);
-	val &= ~SACR0_RST;
-	sa1111_sac_writereg(devptr, val, SA1111_SACR0);
 
-	// Turn I2S/L3 clocks off
 	val = sa1111_readl(sachip->base + SA1111_SKPCR);
-	val &= ~(SKPCR_I2SCLKEN | SKPCR_L3CLKEN);
+	val &= ~(SKPCR_I2SCLKEN);
 	sa1111_writel(val, sachip->base + SA1111_SKPCR);
 	
 	// Set new sampling rate
+	clk_div = ((AUDIO_CLK_BASE + rate/2)/rate)-1;
 	sa1111_writel(clk_div - 1, sachip->base + SA1111_SKAUD);
 
 	// Turn clocks on
 	val = sa1111_readl(sachip->base + SA1111_SKPCR);
-	val|= (SKPCR_I2SCLKEN | SKPCR_L3CLKEN);
+	val|= (SKPCR_I2SCLKEN);
 	sa1111_writel(val, sachip->base + SA1111_SKPCR);
 
-	// L3 Enable
-	sa1111_sac_writereg(devptr, SACR1_L3EN, SA1111_SACR1);
-	spin_unlock_irqrestore(&sachip->lock, flags);
 
 	val = sa1111_readl(sachip->base + SA1111_SKAUD);
+	spin_unlock_irqrestore(&sachip->lock, flags);
+	
 	DPRINTK(KERN_INFO "j720 sa1111 SA1111_SKAUD: %d\n", val);
-
-	/* Set the UDA1344 sysclock divider */
-	uda_chip.regs.stat0 &= ~(STAT0_SC_MASK);
-	switch (rate) {
-	case 8000:
-	case 11025:
-		uda_chip.regs.stat0 |= STAT0_SC_UNUSED;
-		break;
-	case 16000:
-	case 22050:
-		uda_chip.regs.stat0 |= STAT0_SC_256FS;
-		break;
-	case 32000:
-	case 44100:
-		uda_chip.regs.stat0 |= STAT0_SC_512FS;
-		break;
-	}
-
-	uda_chip.dirty_flags = UDA_STATUS_DIRTY;
-	uda1344_sync(devptr);
 }
 
 /* Set the volume for UDA1344 codec */

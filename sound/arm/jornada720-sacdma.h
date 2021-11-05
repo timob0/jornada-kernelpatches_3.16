@@ -18,6 +18,10 @@
 #define DMA_CH_A   0x00
 #define DMA_CH_B   0x08
 
+// See section 7.4 in datasheet
+#define SAC_FIFO_RX_THRESHOLD 0x06
+#define SAC_FIFO_TX_THRESHOLD 0x06
+
 // callback playback / record state
 #define STATE_FINISHED  0    // Playback of given buffer finished
 #define STATE_RUNNING	1    // Playback of given buffer running
