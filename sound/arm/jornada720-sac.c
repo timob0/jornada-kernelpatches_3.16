@@ -38,6 +38,12 @@
 #include "jornada720-common.h"
 #include "jornada720-sac.h"
 
+#ifdef DEBUG_SAC
+#define DEBUG
+#else
+#undef DEBUG
+#endif
+
 // SAC module lock
 static DEFINE_SPINLOCK(snd_jornada720_sa1111_sac_lock);
 
@@ -74,7 +80,7 @@ void 		   sa1111_l3_send_byte(struct sa1111_dev *devptr, unsigned char addr, uns
 	}
 	// If still not confirmed, restart L3 and retry the transmission
 	if (((sa1111_sac_readreg(devptr, SA1111_SASR0) & SASR0_L3WD) == 0)) {
-		DPRINTK("Avoided crash in l3_sa1111_send_byte. Trying to reset L3.\n");
+		DPRINTK(KERN_INFO "sac: Avoided crash in l3_sa1111_send_byte. Trying to reset L3.\n");
 		SACR1 = sa1111_sac_readreg(devptr, SA1111_SACR1);
 		SACR1 &= ~SACR1_L3EN;
 		sa1111_sac_writereg(devptr, SACR1, SA1111_SACR1);
@@ -118,10 +124,10 @@ void sa1111_audio_init(struct sa1111_dev *devptr) {
 	// Get access to the "parent" sa1111 chip 
 	struct sa1111 *sachip = get_sa1111_base_drv(devptr);
 
-	DPRINTK(KERN_INFO "j720 sa1111 init...");
-	DPRINTK(KERN_INFO "j720 sa1111 device id: %d\n", devptr->devid);
-	DPRINTK(KERN_INFO "j720 sa1111 chip base: 0x%lxh\n", sachip->base);
-	DPRINTK(KERN_INFO "j720 sa1111 SAC  base: 0x%lxh\n", devptr->mapbase);
+	DPRINTK(KERN_INFO "sac: SA1111 init...");
+	DPRINTK(KERN_INFO "sac: SA1111 device id: %d\n", devptr->devid);
+	DPRINTK(KERN_INFO "sac: SA1111 chip base: 0x%lxh\n", sachip->base);
+	DPRINTK(KERN_INFO "sac: SA1111 SAC  base: 0x%lxh\n", devptr->mapbase);
 
 	// Make sure only one thread is in the critical section below.
 	spin_lock(&snd_jornada720_sa1111_sac_lock);
@@ -130,11 +136,11 @@ void sa1111_audio_init(struct sa1111_dev *devptr) {
 	PPDR |= PPC_LDD3 | PPC_LDD4;
 	PPSR |= PPC_LDD4; /* enable speaker */
 	PPSR |= PPC_LDD3; /* enable microphone */
-	DPRINTK(KERN_INFO "j720 sa1111 speaker/mic pre-amps enabled\n");
+	DPRINTK(KERN_INFO "sac: SA1111 speaker/mic pre-amps enabled\n");
 	
 	// deselect AC Link
 	sa1111_select_audio_mode(devptr, SA1111_AUDIO_I2S);
-	DPRINTK(KERN_INFO "j720 sa1111 I2S protocol enabled\n");
+	DPRINTK(KERN_INFO "sac: SA1111 I2S protocol enabled\n");
 
 	/* Enable the I2S clock and L3 bus clock. This is a function in another SA1111 block
 	 * which is why we need the sachip stuff (should probably be a function in sa1111.c/h)
@@ -142,7 +148,7 @@ void sa1111_audio_init(struct sa1111_dev *devptr) {
 	val = sa1111_readl(sachip->base + SA1111_SKPCR);
 	val|= (SKPCR_I2SCLKEN | SKPCR_L3CLKEN);
 	sa1111_writel(val, sachip->base + SA1111_SKPCR);
-	DPRINTK(KERN_INFO "j720 sa1111 I2S and L3 clocks enabled\n");
+	DPRINTK(KERN_INFO "sac: SA1111 I2S and L3 clocks enabled\n");
 
 	/* Activate and reset the Serial Audio Controller */
 	val = sa1111_sac_readreg(devptr, SA1111_SACR0);
@@ -154,10 +160,10 @@ void sa1111_audio_init(struct sa1111_dev *devptr) {
 	val = sa1111_sac_readreg(devptr, SA1111_SACR0);
 	val &= ~SACR0_RST;
 	sa1111_sac_writereg(devptr, val, SA1111_SACR0);
-	DPRINTK(KERN_INFO "j720 sa1111 SAC reset and enabled\n");
+	DPRINTK(KERN_INFO "sac: SA1111 SAC reset and enabled\n");
 
 	sa1111_sac_writereg(devptr, SACR1_L3EN, SA1111_SACR1);
-	DPRINTK(KERN_INFO "j720 sa1111 L3 interface enabled\n");
+	DPRINTK(KERN_INFO "sac: SA1111 L3 interface enabled\n");
 
 	// Set samplerate
 	sa1111_set_audio_rate(devptr, 22050);
@@ -165,7 +171,6 @@ void sa1111_audio_init(struct sa1111_dev *devptr) {
 	
 	spin_unlock(&snd_jornada720_sa1111_sac_lock);
 
-	DPRINTK(KERN_INFO "j720 sa1111 audio samplerate: %d\n", rate);
-
-	DPRINTK(KERN_INFO "done\n");
+	DPRINTK(KERN_INFO "sac:SA1111 audio samplerate: %d\n", rate);
+	DPRINTK(KERN_INFO "sac: done init.\n");
 }

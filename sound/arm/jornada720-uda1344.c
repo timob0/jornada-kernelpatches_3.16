@@ -39,6 +39,12 @@
 #include "jornada720-sac.h"
 #include "jornada720-uda1344.h"
 
+#ifdef DEBUG_UDA1344
+#define DEBUG
+#else
+#undef DEBUG
+#endif
+
 #define AUDIO_CLK_BASE		561600
 
 static DEFINE_SPINLOCK(snd_jornada720_sa1111_uda1344_lock);
@@ -146,8 +152,8 @@ void uda1344_set_samplerate(struct sa1111_dev *devptr, long rate) {
 		rate = 8000;
 	}
 	uda_chip.samplerate = rate;
-	DPRINTK(KERN_INFO "j720 sa1111 PLL clock: %d\n", sa1111_pll_clock(devptr));
-	DPRINTK(KERN_INFO "j720 sa1111 clock divider: %d\n", clk_div);
+	DPRINTK(KERN_INFO "uda1344: SA1111 PLL clock: %d\n", sa1111_pll_clock(devptr));
+	DPRINTK(KERN_INFO "uda1344: SA1111 clock divider: %d\n", clk_div);
 
 	// Set the UDA1344 sysclock divider - turns out it is crucial to do this BEFORE
 	// reprogramming the SA1111 sysclock... 
@@ -189,7 +195,7 @@ void uda1344_set_samplerate(struct sa1111_dev *devptr, long rate) {
 	val = sa1111_readl(sachip->base + SA1111_SKAUD);
 	spin_unlock_irqrestore(&sachip->lock, flags);
 	
-	DPRINTK(KERN_INFO "j720 sa1111 SA1111_SKAUD: %d\n", val);
+	DPRINTK(KERN_INFO "uda1344: SA1111_SKAUD: %d\n", val);
 }
 
 /* Set the volume for UDA1344 codec */

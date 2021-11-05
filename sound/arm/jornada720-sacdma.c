@@ -40,6 +40,12 @@
 #include "jornada720-sacdma.h"
 #include "jornada720-sac.h"
 
+#ifdef DEBUG_SACDMA
+#define DEBUG
+#else
+#undef DEBUG
+#endif
+
 // SACDMA module lock
 static DEFINE_SPINLOCK(snd_jornada720_sa1111_sacdma_lock);
 
@@ -109,7 +115,7 @@ static void init_sa1111_sac_dma(struct sa1111_dev *devptr, int direction) {
 	
 	/* Make sure direction is 0|1 */
 	if (direction<0 || direction>1) {
-		printk(KERN_ERR "Invalid direction %d\n", direction);
+		printk(KERN_ERR "sacdma: invalid direction %d\n", direction);
 		return -EINVAL;
 	}
 
@@ -123,7 +129,7 @@ static void init_sa1111_sac_dma(struct sa1111_dev *devptr, int direction) {
 		sa1111_sac_writereg(devptr, val, SA1111_SADTCA); // Zero count A register
 		sa1111_sac_writereg(devptr, val, SA1111_SADTSB); // Zero address B register
 		sa1111_sac_writereg(devptr, val, SA1111_SADTCB); // Zero count B register
-		DPRINTK(KERN_INFO "j720 sa1111 SAC DMA TX registers reset.\n");
+		DPRINTK(KERN_INFO "sacdma: SA1111 SAC DMA TX registers reset.\n");
 	}
 
 	if  (direction==SA1111_SAC_RCV_CHANNEL) {
@@ -133,7 +139,7 @@ static void init_sa1111_sac_dma(struct sa1111_dev *devptr, int direction) {
 		sa1111_sac_writereg(devptr, val, SA1111_SADRCA); // Zero count A register
 		sa1111_sac_writereg(devptr, val, SA1111_SADRSB); // Zero address B register
 		sa1111_sac_writereg(devptr, val, SA1111_SADRCB); // Zero count B register
-		DPRINTK(KERN_INFO "j720 sa1111 SAC DMA RX registers reset.\n");
+		DPRINTK(KERN_INFO "sacdma: SA1111 SAC DMA RX registers reset.\n");
 	}
 	
 	// Program SACR0 DMA Thresholds
@@ -151,7 +157,7 @@ static void init_sa1111_sac_dma(struct sa1111_dev *devptr, int direction) {
 	spin_lock(&snd_jornada720_sa1111_sacdma_lock);
 
 
-	DPRINTK(KERN_INFO "j720 sa1111 SAC initialized\n");
+	DPRINTK(KERN_INFO "sacdma: SA1111 SAC initialized\n");
 }
 
 /* Find out if dma for the given direction is finished
@@ -183,7 +189,7 @@ static int is_done_sa1111_sac_dma(struct sa1111_dev *devptr, int direction) {
  * Note: This will not setup the dma interrupt handling.
  */
 static int start_sa1111_sac_dma(struct sa1111_dev *devptr, dma_addr_t dma_ptr, size_t size, int direction) {
-	DPRINTK(KERN_INFO "start_sa1111_sac_dma\n");
+	DPRINTK(KERN_INFO "sacdma: start_sa1111_sac_dma\n");
 	unsigned int val;
 	unsigned int REG_CS    = SA1111_SADTCS + (direction * DMA_REG_RX_OFS);  // Control register
 	unsigned int REG_ADDR  = SA1111_SADTSA + (direction * DMA_REG_RX_OFS);  // Address register
@@ -191,7 +197,7 @@ static int start_sa1111_sac_dma(struct sa1111_dev *devptr, dma_addr_t dma_ptr, s
 
 	/* Make sure direction is 0|1 */
 	if (direction<0 || direction>1) {
-		printk(KERN_ERR "Invalid direction %d\n", direction);
+		printk(KERN_ERR "sacdma: invalid direction %d\n", direction);
 		return -EINVAL;
 	}
 
@@ -211,15 +217,15 @@ static int start_sa1111_sac_dma(struct sa1111_dev *devptr, dma_addr_t dma_ptr, s
 		// update control reg value
 		val |= SAD_CS_DSTB | SAD_CS_DEN;
 		#ifdef DEBUG
-		printk(" using DMA channel B\n");
+		printk("sacdma: using DMA channel B\n");
 
-		printk(" using DMA address reg 0x%lxh\n", REG_ADDR);
-		printk(" using DMA count   reg 0x%lxh\n", REG_COUNT);
-		printk(" using DMA control reg 0x%lxh\n", REG_CS);
+		printk("sacdma: using DMA address reg 0x%lxh\n", REG_ADDR);
+		printk("sacdma: using DMA count   reg 0x%lxh\n", REG_COUNT);
+		printk("sacdma: using DMA control reg 0x%lxh\n", REG_CS);
 
-		printk(" using DMA address     0x%lxh\n", dma_ptr);
-		printk(" using DMA count       0x%lxh\n", size);
-		printk(" using DMA control     0x%lxh\n", val);
+		printk("sacdma: using DMA address     0x%lxh\n", dma_ptr);
+		printk("sacdma: using DMA count       0x%lxh\n", size);
+		printk("sacdma: using DMA control     0x%lxh\n", val);
 		#endif
 		sa1111_sac_writereg(devptr, dma_ptr, REG_ADDR);
 		sa1111_sac_writereg(devptr, size, REG_COUNT);
@@ -234,13 +240,13 @@ static int start_sa1111_sac_dma(struct sa1111_dev *devptr, dma_addr_t dma_ptr, s
 		#ifdef DEBUG
 		printk(" using DMA channel A\n");
 
-		printk(" using DMA address reg 0x%lxh\n", REG_ADDR);
-		printk(" using DMA count   reg 0x%lxh\n", REG_COUNT);
-		printk(" using DMA control reg 0x%lxh\n", REG_CS);
+		printk("sacdma: using DMA address reg 0x%lxh\n", REG_ADDR);
+		printk("sacdma: using DMA count   reg 0x%lxh\n", REG_COUNT);
+		printk("sacdma: using DMA control reg 0x%lxh\n", REG_CS);
 
-		printk(" using DMA address     0x%lxh\n", dma_ptr);
-		printk(" using DMA count       0x%lxh\n", size);
-		printk(" using DMA control     0x%lxh\n", val);
+		printk("sacdma: using DMA address     0x%lxh\n", dma_ptr);
+		printk("sacdma: using DMA count       0x%lxh\n", size);
+		printk("sacdma: using DMA control     0x%lxh\n", val);
 		#endif
 		sa1111_sac_writereg(devptr, dma_ptr, REG_ADDR);
 		sa1111_sac_writereg(devptr, size, REG_COUNT);
@@ -265,12 +271,12 @@ static int stop_sa1111_sac_dma(struct sa1111_dev *devptr, int direction) {
  *   - call the registered callback (will be sth. to update the ALSA audio layer)
  */
 static irqreturn_t sa1111_dma_irqhandler(int irq, void *devptr)  {
-	DPRINTK(KERN_INFO "sa1111_dma_irqhandler called for irq: %d\n", irq);
+	DPRINTK(KERN_INFO "sacdma: sa1111_dma_irqhandler called for irq: %d\n", irq);
 	if (dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_start == NULL ||
 		dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_ptr == NULL ||
 		dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->size == 0
 	) {
-		printk(KERN_ERR "sa1111_dma_irqhandler called with invalid values!");
+		printk(KERN_ERR "sacdma: sa1111_dma_irqhandler called with invalid values!");
 	}
 
 	switch (FROM_SA1111_IRQ(irq, devptr)) {
@@ -326,15 +332,16 @@ static irqreturn_t sa1111_dma_irqhandler(int irq, void *devptr)  {
  * Note: - request_irq will enable the interrupt handling
  *       - IRQ numbers are relative to the sa1111 chip irq_base, 
  *         thats what the TO/FROM SA1111_IRQ macro is for
+ *       - device_driver is a unique "cookie" for free_irq to identify the IRQ
  */
 static int sa1111_dma_irqrequest(struct sa1111_dev *devptr, unsigned int direction) {
-	DPRINTK(KERN_ERR "sa1111_irqrequest\n");
+	DPRINTK(KERN_ERR "sacdma: sa1111_irqrequest\n");
 	unsigned int irqa, irqb;
 	int err;
 
 	/* Make sure direction is 0|1 */
 	if (direction<0 || direction>1) {
-		printk(KERN_ERR "Invalid direction %d\n", direction);
+		printk(KERN_ERR "sacdma: invalid direction %d\n", direction);
 		return -EINVAL;
 	}
 
@@ -346,7 +353,7 @@ static int sa1111_dma_irqrequest(struct sa1111_dev *devptr, unsigned int directi
 		irqa = TO_SA1111_IRQ(AUDXMTDMADONEA + direction, devptr);
 		err = request_irq(irqa, sa1111_dma_irqhandler, 0, SA1111_DRIVER_NAME(devptr), devptr);
 		if (err) {
-			printk(KERN_ERR "unable to request IRQ %d for DMA channel %d (A)\n", irqa, direction);
+			printk(KERN_ERR "sacdma: unable to request IRQ %d for DMA channel %d (A)\n", irqa, direction);
 			spin_unlock(&snd_jornada720_sa1111_sacdma_lock);
 			return err;
 		}
@@ -358,9 +365,9 @@ static int sa1111_dma_irqrequest(struct sa1111_dev *devptr, unsigned int directi
 		irqb = TO_SA1111_IRQ(AUDXMTDMADONEB + direction, devptr);
 		err = request_irq(irqb, sa1111_dma_irqhandler, 0, SA1111_DRIVER_NAME(devptr), devptr);
 		if (err) {
-			printk(KERN_ERR "unable to request IRQ %d for DMA channel %d (B)\n", irqb, direction);
+			printk(KERN_ERR "sacdma: unable to request IRQ %d for DMA channel %d (B)\n", irqb, direction);
 			spin_unlock(&snd_jornada720_sa1111_sacdma_lock);
-			free_irq(irqa, sa1111_get_drvdata(devptr));
+			free_irq(irqa, devptr);
 			return err;
 		}
 		dma_channels[direction].irq_b = irqb;
@@ -374,29 +381,36 @@ static int sa1111_dma_irqrequest(struct sa1111_dev *devptr, unsigned int directi
 
 /* Release the IRQ handlers for the given direction */
 static void sa1111_dma_irqrelease(struct sa1111_dev *devptr, unsigned int direction) {
-	DPRINTK(KERN_INFO "sa1111_dma_irqrelease\n");
+	DPRINTK(KERN_INFO "sacdma: sa1111_dma_irqrelease\n");
 
 	/* Make sure direction is 0|1 */
 	if (direction<0 || direction>1) {
-		printk(KERN_ERR "Invalid direction %d\n", direction);
+		printk(KERN_ERR "sacdma: invalid direction %d\n", direction);
 		return -EINVAL;
 	}
 
 	// Make sure only one thred messes with the registers
+	DPRINTK(KERN_INFO "sacdma: sa1111_dma_irqrelease lock\n");
 	spin_lock(&snd_jornada720_sa1111_sacdma_lock);
 
 	if (dma_channels[direction].irq_a!=0) {
-		free_irq(dma_channels[direction].irq_a, sa1111_get_drvdata(devptr));
+		DPRINTK(KERN_INFO "sacdma: sa1111_dma_irqrelease 1\n");
+		DPRINTK(KERN_INFO "sacdma: sa1111_dma_irqrelease devptr: 0x%lxh\n", devptr);
+		free_irq(dma_channels[direction].irq_a, devptr);
 		dma_channels[direction].irq_a = 0;
 	}
 
 	if (dma_channels[direction].irq_b!=0) {
-		free_irq(dma_channels[direction].irq_b, sa1111_get_drvdata(devptr));
+		DPRINTK(KERN_INFO "sacdma: sa1111_dma_irqrelease 2\n");
+		DPRINTK(KERN_INFO "sacdma: sa1111_dma_irqrelease devptr: 0x%lxh\n", devptr);
+		free_irq(dma_channels[direction].irq_b, devptr);
 		dma_channels[direction].irq_b = 0;
 	}
 
-	// Make sure only one thred messes with the registers
+	// Make sure only one thread messes with the registers
+	DPRINTK(KERN_INFO "sacdma: sa1111_dma_irqrelease unlock\n");
 	spin_unlock(&snd_jornada720_sa1111_sacdma_lock);
+	DPRINTK(KERN_INFO "sacdma: sa1111_dma_irqrelease done\n");
 }
 
 // PUBLIC Interface
@@ -412,14 +426,14 @@ int sa1111_dma_alloc(struct sa1111_dev *devptr) {
 	// Request and init Interrupt Handlers
 	err = sa1111_dma_irqrequest(devptr, SA1111_SAC_XMT_CHANNEL);
 	if (err < 0) {
-		printk(KERN_ERR "Unable to request IRQs for TX channel, error %d\n", err);
+		printk(KERN_ERR "sacdma: unable to request IRQs for TX channel, error %d\n", err);
 		return err;
 	}
 
 	// Request and init Interrupt Handlers
 	err = sa1111_dma_irqrequest(devptr, SA1111_SAC_RCV_CHANNEL);
 	if (err < 0) {
-		printk(KERN_ERR "Unable to request IRQs for RX channel, error %d\n", err);
+		printk(KERN_ERR "sacdma: unable to request IRQs for RX channel, error %d\n", err);
 		sa1111_dma_irqrelease(devptr, SA1111_SAC_XMT_CHANNEL);
 		return err;
 	}
@@ -433,6 +447,7 @@ int sa1111_dma_alloc(struct sa1111_dev *devptr) {
 
 /* Release resources for PCM playback / recording */
 int sa1111_dma_release(struct sa1111_dev *devptr) {
+	DPRINTK(KERN_INFO "sacdma: sa1111_dma_release devptr: 0x%lxh\n", devptr);
 	sa1111_dma_irqrelease(devptr, SA1111_SAC_XMT_CHANNEL);
 	sa1111_dma_irqrelease(devptr, SA1111_SAC_RCV_CHANNEL);
 
@@ -440,26 +455,26 @@ int sa1111_dma_release(struct sa1111_dev *devptr) {
 }
 
 int sa1111_dma_playback(struct sa1111_dev *devptr, dma_buf_t *dma_buffer, dma_block_callback callback) {
-	DPRINTK(KERN_INFO "sa1111_dma_playback\n");
+	DPRINTK(KERN_INFO "sacdma: sa1111_dma_playback\n");
 	int err;
 
 	if (dma_buffer==NULL) {
-		printk(KERN_ERR "sa1111_dma_playback failed: dma_buffer is NULL.\n");
+		printk(KERN_ERR "sacdma: sa1111_dma_playback failed: dma_buffer is NULL.\n");
 		return -EINVAL;		
 	}
 
 	if (dma_buffer->dma_ptr == NULL) {
-		printk(KERN_ERR "sa1111_dma_playback failed: dma_buffer->dma_ptr is NULL.\n");
+		printk(KERN_ERR "sacdma: sa1111_dma_playback failed: dma_buffer->dma_ptr is NULL.\n");
 		return -EINVAL;		
 	}
 
 	if (dma_buffer->size==0) {
-		printk(KERN_ERR "sa1111_dma_playback failed: dma_buffer->size = 0.\n");
+		printk(KERN_ERR "sacdma: sa1111_dma_playback failed: dma_buffer->size = 0.\n");
 		return -EINVAL;		
 	}
 	
 	if (dma_channels[SA1111_SAC_XMT_CHANNEL].running) {
-		printk(KERN_ERR "sa1111_dma_playback failed: SA1111_SAC_XMT_CHANNEL DMA already running.\n");
+		printk(KERN_ERR "sacdma: sa1111_dma_playback failed: SA1111_SAC_XMT_CHANNEL DMA already running.\n");
 		return -EINVAL;
 	}
 
@@ -473,7 +488,7 @@ int sa1111_dma_playback(struct sa1111_dev *devptr, dma_buf_t *dma_buffer, dma_bl
 				SA1111_SAC_XMT_CHANNEL);
 	
 	if (err<0) {
-		printk(KERN_ERR "sa1111_dma_playback failed: start_sa1111_sac_dma() returned error.\n");
+		printk(KERN_ERR "sacdma: sa1111_dma_playback failed: start_sa1111_sac_dma() returned error.\n");
 		dma_channels[SA1111_SAC_XMT_CHANNEL].running=0;
 		stop_sa1111_sac_dma(devptr, SA1111_SAC_XMT_CHANNEL);
 		return -EINVAL;

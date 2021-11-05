@@ -14,13 +14,16 @@
 
 // ******** Configuration switches ********
 // Startup sound, undef below to disable
-#define STARTUP_CHIME
+#undef STARTUP_CHIME
 
 // Disable sleep ability for now
 #undef CONFIG_PM_SLEEP
 
-// Debugging switch
-#undef DEBUG
+// Debugging switches
+#undef DEBUG_SOUND
+#undef DEBUG_SAC
+#undef DEBUG_SACDMA
+#undef DEBUG_UDA1344
 
 // Fixed samplerate
 // #define RATE_FIXED
