@@ -129,9 +129,9 @@ static struct snd_pcm_hardware jornada720_pcm_hardware = {
 	.buffer_bytes_max =	MAX_BUFFER_SIZE,
 	.period_bytes_min =	MIN_DMA_BLOCK_SIZE,
 	.period_bytes_max =	MAX_DMA_BLOCK_SIZE,
-	.periods_min =		2,
+	.periods_min =		4,
 	.periods_max =		1024,
-	.fifo_size =		0,
+	.fifo_size =		16,
 };
 
 /*

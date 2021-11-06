@@ -293,12 +293,14 @@ static irqreturn_t sa1111_dma_irqhandler(int irq, void *devptr)  {
 				if (dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_ptr < (dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_start + dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->size)
 				) {
 					// Kick off next DMA and trigger callback
+					start_sa1111_sac_dma(devptr, dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_ptr, 
+					                             dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->period_size,
+												 dma_channels[SA1111_SAC_XMT_CHANNEL].direction);	
+					
 					if (dma_channels[SA1111_SAC_XMT_CHANNEL].callback != NULL)
 						dma_channels[SA1111_SAC_XMT_CHANNEL].callback(dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer, STATE_RUNNING);
 
-					start_sa1111_sac_dma(devptr, dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_ptr, 
-					                             dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->period_size,
-												 dma_channels[SA1111_SAC_XMT_CHANNEL].direction);							
+						
 				} 
 				// if end of buffer reached, replay from start if loop flag set
 				else {
@@ -310,11 +312,12 @@ static irqreturn_t sa1111_dma_irqhandler(int irq, void *devptr)  {
 						dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_ptr = dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_start;
 						
 						// Kick off next DMA and trigger callback
-						if (dma_channels[SA1111_SAC_XMT_CHANNEL].callback != NULL)
-							dma_channels[SA1111_SAC_XMT_CHANNEL].callback(dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer, STATE_LOOPING);
 						start_sa1111_sac_dma(devptr, dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->dma_ptr, 
 						                             dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer->period_size, 
 													 dma_channels[SA1111_SAC_XMT_CHANNEL].direction);						
+
+						if (dma_channels[SA1111_SAC_XMT_CHANNEL].callback != NULL)
+							dma_channels[SA1111_SAC_XMT_CHANNEL].callback(dma_channels[SA1111_SAC_XMT_CHANNEL].dma_buffer, STATE_LOOPING);
 					}
 				}	
 			}
