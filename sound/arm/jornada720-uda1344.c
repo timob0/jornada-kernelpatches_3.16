@@ -39,15 +39,16 @@
 #include "jornada720-sac.h"
 #include "jornada720-uda1344.h"
 
-#ifdef DEBUG_UDA1344
-#define DEBUG
-#else
+
+// ********* Debugging tools **********
 #undef DEBUG
-#endif
 
-#define AUDIO_CLK_BASE		561600
-
-static DEFINE_SPINLOCK(snd_jornada720_sa1111_uda1344_lock);
+#ifdef DEBUG
+#define DPRINTK(format,args...) printk(KERN_DEBUG format,##args)
+#else
+#define DPRINTK(format,args...)
+#endif 
+// ********* Debugging tools **********
 
 // The UDA1344 chip instance
 static struct uda1344 uda_chip;
@@ -60,30 +61,53 @@ struct uda1344* uda1344_instance(void) {
 /* Synchronize registers of the uda_chip instance with the hardware. We need to
  * mirror it in SW since we can't read data from the chip. */ 
 static void uda1344_sync(struct sa1111_dev *devptr) {
-	// Push the volume setting into the register
+	int retries=0;
+	int err=0;
+
+__retry:
+	err=0;
+	sa1111_l3_start(devptr);
 	
 	if (uda_chip.dirty_flags & UDA_STATUS_DIRTY) {		
-		sa1111_l3_send_byte(devptr, UDA1344_STATUS, STAT0 | uda_chip.regs.stat0);
+		err = sa1111_l3_send_byte(devptr, UDA1344_STATUS, STAT0 | uda_chip.regs.stat0);
+		if (err<0) goto __fail;
+		uda_chip.dirty_flags &= ~UDA_STATUS_DIRTY;
 	}
 
 	if (uda_chip.dirty_flags & UDA_VOLUME_DIRTY) {
 		uda_chip.regs.data0_0 = DATA0_VOLUME(uda_chip.volume);
-		sa1111_l3_send_byte(devptr, UDA1344_DATA,   DATA0 | uda_chip.regs.data0_0);
+		err = sa1111_l3_send_byte(devptr, UDA1344_DATA,   DATA0 | uda_chip.regs.data0_0);
+		if (err<0) goto __fail;
+		uda_chip.dirty_flags &= ~UDA_VOLUME_DIRTY;
 	}
 
 	if (uda_chip.dirty_flags & UDA_BASS_TREBLE_DIRTY) {
 		uda_chip.regs.data0_1 = DATA1_BASS(uda_chip.bass) | DATA1_TREBLE(uda_chip.treble);
-		sa1111_l3_send_byte(devptr, UDA1344_DATA,   DATA1 | uda_chip.regs.data0_1);
+		err = sa1111_l3_send_byte(devptr, UDA1344_DATA,   DATA1 | uda_chip.regs.data0_1);
+		if (err<0) goto __fail;
+		uda_chip.dirty_flags &= ~UDA_BASS_TREBLE_DIRTY;
 	}
 
 	if (uda_chip.dirty_flags & UDA_FILTERS_MUTE_DIRTY) {
 		uda_chip.regs.data0_2 = ((uda_chip.deemp_mode & 0x03) << 3) | ((uda_chip.mute & 0x01) << 2) | (uda_chip.dsp_mode & 0x03);
-		sa1111_l3_send_byte(devptr, UDA1344_DATA,   DATA2 | uda_chip.regs.data0_2);
+		err = sa1111_l3_send_byte(devptr, UDA1344_DATA,   DATA2 | uda_chip.regs.data0_2);
+		if (err<0) goto __fail;
+		uda_chip.dirty_flags &= ~UDA_FILTERS_MUTE_DIRTY;
 	}
 
 	if (uda_chip.dirty_flags & UDA_POWER_DIRTY) {
-		sa1111_l3_send_byte(devptr, UDA1344_DATA,   DATA3 | uda_chip.regs.data0_3);
+		err = sa1111_l3_send_byte(devptr, UDA1344_DATA,   DATA3 | uda_chip.regs.data0_3);
+		if (err<0) goto __fail;
+		uda_chip.dirty_flags &= ~UDA_POWER_DIRTY;
 	}
+
+__fail:
+	sa1111_l3_end(devptr);
+	
+	if (err<0 && ++retries<10) {
+		goto __retry;
+	}
+
 	// Clear dirty flags
 	uda_chip.dirty_flags=0;
 }
@@ -99,7 +123,7 @@ int uda1344_open(struct sa1111_dev *devptr) {
 	uda_chip.dsp_mode = 0;
 	uda_chip.samplerate = 22050;
 	uda_chip.dirty_flags = 0;
-	uda_chip.regs.stat0   = STAT0_SC_512FS | STAT0_IF_I2S;
+	uda_chip.regs.stat0   = STAT0_SC_256FS | STAT0_IF_I2S;
 	uda_chip.regs.data0_0 = DATA0_VOLUME(0);
 	uda_chip.regs.data0_1 = DATA1_BASS(0) | DATA1_TREBLE(0);
 	uda_chip.regs.data0_2 = DATA2_DEEMP_NONE | DATA2_FILTER_MAX;
@@ -118,19 +142,22 @@ void uda1344_close(struct sa1111_dev *devptr) {
 	uda_chip.regs.data0_3 = DATA3_POWER_OFF;
 	uda_chip.dirty_flags = UDA_POWER_DIRTY;
 	uda1344_sync(devptr);
+	// Stop L3 clock
+	sa1111_l3_end(devptr);
 }
 
 /* Setup the samplerate for both the UDA1344 and the SA1111 devices */
 void uda1344_set_samplerate(struct sa1111_dev *devptr, long rate) {
-	struct sa1111 *sachip = get_sa1111_base_drv(devptr);
-	unsigned int clk_div;
 	unsigned long flags;
 	unsigned int val;
 
 	/*
 	 * Samplerates as per Table 7-6 from Intels SA1111 datasheet
 	 */
-	if (rate >= 44100) {
+	if (rate >= 48000) {
+		rate = 48000;		
+ 	}	
+	else if (rate >= 44100) {
 		rate = 44100;		
  	}
 	else if (rate >= 32000) {
@@ -153,48 +180,28 @@ void uda1344_set_samplerate(struct sa1111_dev *devptr, long rate) {
 	}
 	uda_chip.samplerate = rate;
 	DPRINTK(KERN_INFO "uda1344: SA1111 PLL clock: %d\n", sa1111_pll_clock(devptr));
-	DPRINTK(KERN_INFO "uda1344: SA1111 clock divider: %d\n", clk_div);
 
 	// Set the UDA1344 sysclock divider - turns out it is crucial to do this BEFORE
 	// reprogramming the SA1111 sysclock... 
-	uda_chip.regs.stat0 &= ~(STAT0_SC_MASK);
+	// uda_chip.regs.stat0 &= ~(STAT0_SC_MASK);
+	uda_chip.regs.stat0 = 0x00;
 	switch (rate) {
 		case 8000:
+		case 11025:
 		case 16000:
+		case 22050:
 		case 32000:
 			uda_chip.regs.stat0 = STAT0_SC_256FS | STAT0_IF_I2S;
 			break;
-			uda_chip.regs.stat0 = STAT0_SC_384FS | STAT0_IF_I2S;
-			break;
-		case 11025:
-		case 22050:
 		case 44100:
+		case 48000:
 			uda_chip.regs.stat0 = STAT0_SC_512FS | STAT0_IF_I2S;
 			break;
 	}
-	uda_chip.dirty_flags = UDA_STATUS_DIRTY;
+	// Try to sync all, maybe this avoids the hissing sound 1s into the replay
+	uda_chip.dirty_flags = (UDA_STATUS_DIRTY | UDA_VOLUME_DIRTY); 
 	uda1344_sync(devptr);
 
-	// Turn I2S clocks off
-	spin_lock_irqsave(&sachip->lock, flags);
-
-	val = sa1111_readl(sachip->base + SA1111_SKPCR);
-	val &= ~(SKPCR_I2SCLKEN);
-	sa1111_writel(val, sachip->base + SA1111_SKPCR);
-	
-	// Set new sampling rate
-	clk_div = ((AUDIO_CLK_BASE + rate/2)/rate)-1;
-	sa1111_writel(clk_div - 1, sachip->base + SA1111_SKAUD);
-
-	// Turn clocks on
-	val = sa1111_readl(sachip->base + SA1111_SKPCR);
-	val|= (SKPCR_I2SCLKEN);
-	sa1111_writel(val, sachip->base + SA1111_SKPCR);
-
-
-	val = sa1111_readl(sachip->base + SA1111_SKAUD);
-	spin_unlock_irqrestore(&sachip->lock, flags);
-	
 	DPRINTK(KERN_INFO "uda1344: SA1111_SKAUD: %d\n", val);
 }
 
