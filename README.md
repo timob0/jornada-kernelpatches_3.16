@@ -8,6 +8,8 @@ Contents:
   - ./drivers/video/fbdev/s1d13xxxfb.c
 - ./sound/arm/jornada720.c - Sounddriver for J720, working PCM playback for samplerates 8-41.1khz, Mixer controls
   - Bugs: 
-    - playback in 44.1khz might heavily "crackle", unload/load the kernel module to fix it
-    - samplerate switching not sorted out yet
+    - fixed: playback in 44.1khz might heavily "crackle", unload/load the kernel module to fix it
+    - fixed: samplerate switching not sorted out yet
+  - New feature:
+    - module parameter "rate_limit" can be used to specify a maximum hardware samplerate, ALSA will then reasample in software. Usage: `modprobe snd-jornada720 rate_limit=22050` Default if nothing specified is 48000
   - Useful tools to install: Alsa Utils, MOC, MPG123 --> `apt install alsa-utils moc mpg123`
