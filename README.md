@@ -7,4 +7,7 @@ Contents:
   - ./include/video/s1d13xxxfb.h
   - ./drivers/video/fbdev/s1d13xxxfb.c
 - ./sound/arm/jornada720.c - Sounddriver for J720, working PCM playback for samplerates 8-41.1khz, Mixer controls
-  - Bugs: playback in 44.1khz might heavily "crackle", unload/load the kernel module to fix it
+  - Bugs: 
+    - playback in 44.1khz might heavily "crackle", unload/load the kernel module to fix it
+    - samplerate switching not sorted out yet
+  - Useful tools to install: Alsa Utils, MOC, MPG123 --> `apt install alsa-utils moc mpg123`
