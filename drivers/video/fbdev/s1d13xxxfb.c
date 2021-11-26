@@ -1070,20 +1070,14 @@ s1d13xxxfb_remove(struct platform_device *pdev)
 	struct s1d13xxxfb_par *par = NULL;
 
 	// Powerdown before remove
-	// redundant: s1d13xxxfb_blank(FB_BLANK_POWERDOWN, info);
+	s1d13xxxfb_blank(FB_BLANK_POWERDOWN, info);
 
 	if (info) {
 		par = info->par;
 		if (par && par->regs) {
 			/* disable output & enable powersave */
-			s1d13xxxfb_writereg(par, S1DREG_PS_CNF, 0x01);
-
-			// Wait until LCD powered down
-			while ((s1d13xxxfb_readreg(par, S1DREG_PS_STATUS) & 0x02)==0) udelay(100);
-
-			// Turn displays off
 			s1d13xxxfb_writereg(par, S1DREG_COM_DISP_MODE, 0x00);
-
+			s1d13xxxfb_writereg(par, S1DREG_PS_CNF, 0x11);
 			iounmap(par->regs);
 		}
 
