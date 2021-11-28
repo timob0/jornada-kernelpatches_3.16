@@ -12,6 +12,8 @@ Contents:
     - fixed: samplerate switching not working
   - New feature:
     - module parameter "rate_limit" can be used to specify a maximum hardware samplerate, ALSA will then reasample in software. Usage: `modprobe snd-jornada720 rate_limit=22050` Default if nothing specified is 48000
+  - Not implemented yet: 
+    - Audio recording. The hardware is capable of full duplex audio recording, this might be added later if there is demand for it.
   - Useful tools to install: Alsa Utils, MOC, MPG123 --> `apt install alsa-utils moc mpg123`
   - Also apt-install sdl-mixer libraries to enable sound in SDL apps
 - cs-ide: Small patch to the PCMCIA IDE driver (cs-ide.c) to send a soft-reset to the CF card which should force it flush its write cache (if present and active - Transcend cards...) before powering off in order to minimize the chance of disk corruption.
